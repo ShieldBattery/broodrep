@@ -4,7 +4,7 @@ A pure Rust library for reading StarCraft 1 replay files. Supports all versions.
 
 ## Development
 
-Test data is stored in Git LFS. If you haven't used Git LFS before run:
+Test data is stored in Git LFS. If you haven't used Git LFS before, run:
 
 ```
 git lfs install
