@@ -4,8 +4,14 @@ use std::{
 };
 
 use byteorder::{LittleEndian as LE, ReadBytesExt as _};
+use explode::ExplodeReader;
 use flate2::bufread::ZlibDecoder;
 use thiserror::Error;
+
+use crate::compression::SafeDecompressor;
+pub use crate::compression::{DecompressionConfig, DecompressionError};
+
+mod compression;
 
 #[derive(Error, Debug)]
 pub enum BroodrepError {
@@ -13,8 +19,8 @@ pub enum BroodrepError {
     IoError(#[from] std::io::Error),
     #[error("malformed header: {0}")]
     MalformedHeader(&'static str),
-    #[error("problem decompressing legacy compressed data: {0}")]
-    LegacyCompressionError(explode::Error),
+    #[error("problem decompressing data: {0}")]
+    Decompression(#[from] DecompressionError),
 }
 
 pub struct Replay<R: Read + Seek> {
@@ -24,7 +30,21 @@ pub struct Replay<R: Read + Seek> {
 }
 
 impl<R: Read + Seek> Replay<R> {
-    pub fn new(mut reader: R) -> Result<Self, BroodrepError> {
+    /// Creates a new Replay by parsing data from a [Read] implementation with default settings for
+    /// reading.
+    pub fn new(reader: R) -> Result<Self, BroodrepError> {
+        Self::new_with_decompression_config(reader, DecompressionConfig::default())
+    }
+
+    // TODO(tec27): Would probably be nice to be able to specify limits for the file as a whole as
+    // well
+    /// Creates a new Replay by parsing data from a [Read] implementation with specified settings
+    /// for reading. Note that the limits specified will apply to each chunk individually, rather
+    /// than to the entire replay collectively.
+    pub fn new_with_decompression_config(
+        mut reader: R,
+        config: DecompressionConfig,
+    ) -> Result<Self, BroodrepError> {
         let format = Self::detect_format(&mut reader)?;
 
         reader.seek(SeekFrom::Start(0))?;
@@ -49,7 +69,7 @@ impl<R: Read + Seek> Replay<R> {
         }
 
         // Replay header section
-        let replay_header = Self::read_legacy_section(&mut reader, format)?;
+        let replay_header = Self::read_legacy_section(&mut reader, format, config)?;
         let replay_header = Self::parse_replay_header(&replay_header)?;
 
         Ok(Replay {
@@ -100,12 +120,17 @@ impl<R: Read + Seek> Replay<R> {
         })
     }
 
-    fn read_legacy_section(reader: &mut R, format: ReplayFormat) -> Result<Vec<u8>, BroodrepError> {
+    fn read_legacy_section(
+        reader: &mut R,
+        format: ReplayFormat,
+        config: DecompressionConfig,
+    ) -> Result<Vec<u8>, BroodrepError> {
         let header = Self::read_section_header(reader)?;
         // TODO(tec27): Pass a size hint for known sections to avoid reallocations?
-        let mut data = vec![];
+        let mut data = Vec::new();
         for _ in 0..header.num_chunks {
             let size = reader.read_u32::<LE>()?;
+            data.reserve(size as usize);
             // TODO(tec27): Keep a working buffer around to avoid needing to reallocate buffers
             // frequently? Peek the first byte and seek back to avoid needing this allocation at
             // all?
@@ -114,20 +139,23 @@ impl<R: Read + Seek> Replay<R> {
 
             match format {
                 ReplayFormat::Legacy => {
-                    // TODO(tec27): Often our data will be much smaller than the default buffer
-                    // size, so maybe we could use whatever size hint based on the section to
-                    // provide a smaller buffer (and use explode_with_buffer)
-                    let decompressed = explode::explode(&compressed[..])
-                        .map_err(BroodrepError::LegacyCompressionError)?;
-                    data.extend(decompressed);
+                    let mut decoder = SafeDecompressor::new(
+                        ExplodeReader::new(&compressed[..]),
+                        config,
+                        Some(size as u64),
+                    );
+                    decoder.read_to_end(&mut data)?;
                 }
                 ReplayFormat::Modern | ReplayFormat::Modern121 => {
                     if size <= 4 || compressed[0] != 0x78 {
-                        // FIXME: implement implode decoding
                         // Not compressed, we can return it directly
                         data.extend(compressed);
                     } else {
-                        let mut decoder = ZlibDecoder::new(&compressed[..]);
+                        let mut decoder = SafeDecompressor::new(
+                            ZlibDecoder::new(&compressed[..]),
+                            config,
+                            Some(size as u64),
+                        );
                         decoder.read_to_end(&mut data)?;
                     }
                 }
@@ -167,7 +195,6 @@ impl<R: Read + Seek> Replay<R> {
         let game_sub_type = cursor.read_u16::<LE>()?;
 
         cursor.seek(SeekFrom::Current(8))?; // unknown
-        eprint!("unknown cursor position: {:#x}", cursor.position());
 
         let mut host_name = vec![0u8; 25];
         cursor.read_exact(&mut host_name[..24])?;
