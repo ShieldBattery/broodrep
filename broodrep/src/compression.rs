@@ -9,7 +9,7 @@ use thiserror::Error;
 pub struct DecompressionConfig {
     /// Maximum bytes to decompress (default: 100MB)
     pub max_decompressed_size: u64,
-    /// Maximum compression ratio allowed (default: 1000:1)
+    /// Maximum compression ratio allowed (default: 500:1)
     pub max_compression_ratio: f64,
     /// Maximum time to spend decompressing (default: 30 seconds)
     pub max_decompression_time: Duration,
@@ -19,7 +19,7 @@ impl Default for DecompressionConfig {
     fn default() -> Self {
         Self {
             max_decompressed_size: 100 * 1024 * 1024, // 100MB
-            max_compression_ratio: 1000.0,
+            max_compression_ratio: 500.0,
             max_decompression_time: Duration::from_secs(30),
         }
     }
