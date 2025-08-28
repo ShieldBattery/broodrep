@@ -90,7 +90,7 @@ impl<R: Read> Read for SafeDecompressor<R> {
             // there was more data
             self.inner.set_limit(1);
             let mut buf = [0; 1];
-            if let Ok(1) = self.read(&mut buf) {
+            if let Ok(1) = self.inner.read(&mut buf) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     DecompressionError::SizeLimitExceeded,
@@ -127,6 +127,7 @@ mod tests {
     fn implode_bomb_size() {
         let config = DecompressionConfig {
             max_decompressed_size: 1000 * 1024, // slightly less than 1MB
+            max_compression_ratio: f64::MAX,
             ..Default::default()
         };
         let mut safe_reader = SafeDecompressor::new(
@@ -175,6 +176,7 @@ mod tests {
     fn zlib_bomb_size() {
         let config = DecompressionConfig {
             max_decompressed_size: 1000 * 1024, // slightly less than 1MB
+            max_compression_ratio: f64::MAX,
             ..Default::default()
         };
         let data = create_zlib_bomb();
