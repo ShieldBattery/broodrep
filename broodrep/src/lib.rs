@@ -62,9 +62,9 @@ impl<R: Read + Seek> Replay<R> {
         // to repeat that step here)
         reader.read_u32::<LE>()?;
         if format == ReplayFormat::Modern121 {
-            // This is the length of the "legacy" sections that don't have tags (so the `seRS`
-            // magic is effectively its own tagged section). In older formats, the `reRS` is just
-            // magic and no length is provided
+            // This is the offset of the first section after the "legacy" sections, I guess as a
+            // way to be able to skip them easily? In older formats, this offset is not present
+            // (even though the Modern non-1.21 version does have other sections)
             reader.read_u32::<LE>()?;
         }
 
@@ -170,11 +170,11 @@ impl<R: Read + Seek> Replay<R> {
         let engine = cursor.read_u8()?.into();
         let frames = cursor.read_u32::<LE>()?;
 
-        cursor.seek(SeekFrom::Current(3))?; // unknown/padding?
+        cursor.seek(SeekFrom::Current(3))?; // replay_campaign_mission + 0x48 (lobby init command)
 
         let start_time = cursor.read_u32::<LE>()?;
 
-        cursor.seek(SeekFrom::Current(12))?; // player bytes?
+        cursor.seek(SeekFrom::Current(12))?; // player bytes
 
         // TODO(tec27): Handle non-UTF-8 string formats
         let mut title = vec![0u8; 29];
@@ -214,6 +214,37 @@ impl<R: Read + Seek> Replay<R> {
             .to_string_lossy()
             .into_owned();
 
+        cursor.seek(SeekFrom::Current(38))?; // unknown
+
+        let players = (0..12)
+            .map(|_i| {
+                let slot_id = cursor.read_u16::<LE>()?;
+                cursor.seek(SeekFrom::Current(2))?; // unknown
+                let network_id = cursor.read_u8()?;
+                cursor.seek(SeekFrom::Current(3))?; // unknown
+                let player_type: PlayerType = cursor.read_u8()?.try_into()?;
+                let race: Race = cursor.read_u8()?.try_into()?;
+                let team = cursor.read_u8()?;
+                let mut name = vec![0u8; 26];
+                cursor.read_exact(&mut name[..25])?;
+                let name = CStr::from_bytes_until_nul(&name)
+                    // This should never happen (we left an extra byte to ensure the null) but just
+                    // in case
+                    .map_err(|_e| BroodrepError::MalformedHeader("invalid player name"))?
+                    .to_string_lossy()
+                    .into_owned();
+
+                Ok::<Player, BroodrepError>(Player {
+                    slot_id,
+                    network_id,
+                    player_type,
+                    race,
+                    team,
+                    name,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(ReplayHeader {
             engine,
             frames,
@@ -227,6 +258,7 @@ impl<R: Read + Seek> Replay<R> {
             game_sub_type,
             host_name,
             map_name,
+            slots: players,
         })
     }
 }
@@ -361,7 +393,105 @@ pub struct ReplayHeader {
     pub game_sub_type: u16,
     pub host_name: String,
     pub map_name: String,
-    // TODO(tec27): Player data
+    /// All of the slots in the game, including empty slots.
+    pub slots: Vec<Player>,
+}
+
+impl ReplayHeader {
+    /// Returns an iterator over all of the filled slots in the game (not including observers).
+    pub fn players(&self) -> impl Iterator<Item = &Player> {
+        self.slots
+            .iter()
+            .filter(|p| !p.is_empty() && !p.is_observer())
+    }
+
+    /// Returns an iterator over all of the filled observer slots in the game.
+    pub fn observers(&self) -> impl Iterator<Item = &Player> {
+        self.slots
+            .iter()
+            .filter(|p| !p.is_empty() && p.is_observer())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Player {
+    /// ID of the map slot the player was placed in (post-randomization, if applicable).
+    pub slot_id: u16,
+    /// Network ID of the player. Computer players will be 255. Observers will be 128-131.
+    pub network_id: u8,
+    pub player_type: PlayerType,
+    pub race: Race,
+    pub team: u8,
+    pub name: String,
+    // TODO(tec27): implement colors
+}
+
+impl Player {
+    /// Returns true if this [Player] represents an empty slot.
+    pub fn is_empty(&self) -> bool {
+        self.name.is_empty()
+    }
+
+    /// Returns true if this [Player] is an observer.
+    pub fn is_observer(&self) -> bool {
+        (128..=131).contains(&self.network_id)
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PlayerType {
+    Inactive = 0,
+    Computer = 1,
+    Human = 2,
+    RescuePassive = 3,
+    Unused = 4,
+    ComputerControlled = 5,
+    Open = 6,
+    Neutral = 7,
+    Closed = 8,
+}
+
+impl TryFrom<u8> for PlayerType {
+    type Error = BroodrepError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(PlayerType::Inactive),
+            1 => Ok(PlayerType::Computer),
+            2 => Ok(PlayerType::Human),
+            3 => Ok(PlayerType::RescuePassive),
+            4 => Ok(PlayerType::Unused),
+            5 => Ok(PlayerType::ComputerControlled),
+            6 => Ok(PlayerType::Open),
+            7 => Ok(PlayerType::Neutral),
+            8 => Ok(PlayerType::Closed),
+            _ => Err(BroodrepError::MalformedHeader("invalid player type")),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Race {
+    Zerg = 0,
+    Terran = 1,
+    Protoss = 2,
+    // NOTE(tec27): Generally this shouldn't be present for occupied slots in a replay (as it will
+    // have been resolved by the replay write time), but for empty slots it may be
+    Random = 6,
+}
+
+impl TryFrom<u8> for Race {
+    type Error = BroodrepError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Race::Zerg),
+            1 => Ok(Race::Terran),
+            2 => Ok(Race::Protoss),
+            6 => Ok(Race::Random),
+            _ => Err(BroodrepError::MalformedHeader("invalid assigned race")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -452,5 +582,36 @@ mod tests {
             replay.header.map_name,
             "\u{0007}제3세계(Third World) \u{0005}"
         );
+
+        assert_eq!(replay.header.slots.len(), 12);
+        assert_eq!(
+            replay.header.slots[0],
+            Player {
+                slot_id: 0,
+                network_id: 0,
+                player_type: PlayerType::Human,
+                name: "u".into(),
+                race: Race::Terran,
+                team: 1,
+            }
+        );
+        assert!(!replay.header.slots[0].is_observer());
+        assert_eq!(
+            replay.header.slots[1],
+            Player {
+                slot_id: 1,
+                network_id: 255,
+                player_type: PlayerType::Computer,
+                name: "Sargas Tribe".into(),
+                race: Race::Protoss,
+                team: 1,
+            }
+        );
+        assert!(replay.header.slots[2].is_empty());
+
+        let occupied = replay.header.players().collect::<Vec<_>>();
+        assert_eq!(occupied.len(), 2);
+        let observers = replay.header.observers().collect::<Vec<_>>();
+        assert_eq!(observers.len(), 0);
     }
 }
