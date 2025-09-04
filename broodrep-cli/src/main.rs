@@ -13,12 +13,12 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    
+
     let file = File::open(&args.replay_file)?;
     let replay = broodrep::Replay::new(file)?;
-    
+
     display_replay_info(&replay);
-    
+
     Ok(())
 }
 
@@ -31,17 +31,25 @@ fn display_replay_info(replay: &broodrep::Replay<std::fs::File>) {
     println!("Game Information:");
     println!("  Format:        {}", replay.format());
     println!("  Engine:        {}", replay.engine());
-    
+
     let duration = format_duration(replay.frames(), replay.game_speed());
     println!("  Duration:      {}", duration);
-    
+
     if let Some(start_time) = replay.start_time() {
-        println!("  Started:       {}", start_time.format("%Y-%m-%d %H:%M:%S"));
+        println!(
+            "  Started:       {}",
+            start_time.format("%Y-%m-%d %H:%M:%S")
+        );
     }
-    
+
     println!("  Title:         {}", replay.game_title());
     let (width, height) = replay.map_dimensions();
-    println!("  Map:           {} ({}x{})", replay.map_name(), width, height);
+    println!(
+        "  Map:           {} ({}x{})",
+        replay.map_name(),
+        width,
+        height
+    );
     println!();
 
     // Game Settings Section
@@ -56,12 +64,14 @@ fn display_replay_info(replay: &broodrep::Replay<std::fs::File>) {
     if !players.is_empty() {
         println!("Players:");
         for (i, player) in players.iter().enumerate() {
-            println!("  [{}] {} ({}, {}, Team {})", 
-                     i + 1, 
-                     player.name, 
-                     player.race, 
-                     player.player_type, 
-                     player.team);
+            println!(
+                "  [{}] {} ({}, {}, Team {})",
+                i + 1,
+                player.name,
+                player.race,
+                player.player_type,
+                player.team
+            );
         }
         println!();
     }
@@ -82,5 +92,8 @@ fn format_duration(frames: u32, speed: broodrep::GameSpeed) -> String {
     let total_seconds = total_duration.as_secs();
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;
-    format!("{}:{:02} ({} frames at {})", minutes, seconds, frames, speed)
+    format!(
+        "{}:{:02} ({} frames at {})",
+        minutes, seconds, frames, speed
+    )
 }
