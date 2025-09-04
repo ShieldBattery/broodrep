@@ -4,6 +4,7 @@ use std::{
 };
 
 use byteorder::{LittleEndian as LE, ReadBytesExt as _};
+use chrono::{DateTime, NaiveDateTime};
 use explode::ExplodeReader;
 use flate2::bufread::ZlibDecoder;
 use thiserror::Error;
@@ -85,6 +86,71 @@ impl<R: Read + Seek> Replay<R> {
 
     pub fn format(&self) -> ReplayFormat {
         self.format
+    }
+
+    pub fn engine(&self) -> Engine {
+        self.header.engine
+    }
+
+    pub fn frames(&self) -> u32 {
+        self.header.frames
+    }
+
+    /// Returns the time the game started at, as dictated by the game host. Note that this is
+    /// technically the game seed and not a timestamp (it just happens to use a timestamp), so this
+    /// isn't *guaranteed* to be an accurate time (but in practice it is).
+    pub fn start_time(&self) -> Option<NaiveDateTime> {
+        Some(DateTime::from_timestamp(self.header.start_time as i64, 0)?.naive_utc())
+    }
+
+    pub fn game_title(&self) -> &str {
+        &self.header.title
+    }
+
+    pub fn map_name(&self) -> &str {
+        &self.header.map_name
+    }
+
+    /// Returns the (width, height) of the map (in tiles).
+    pub fn map_dimensions(&self) -> (u16, u16) {
+        (self.header.map_width, self.header.map_height)
+    }
+
+    pub fn game_speed(&self) -> GameSpeed {
+        self.header.speed
+    }
+
+    pub fn game_type(&self) -> GameType {
+        self.header.game_type
+    }
+
+    /// For Top Vs Bottom, specifies the number of players on the first team. For Team game types,
+    /// specifies the number of slots on each team (truncating the last team if necessary).
+    pub fn game_sub_type(&self) -> u16 {
+        self.header.game_sub_type
+    }
+
+    pub fn host_name(&self) -> &str {
+        &self.header.host_name
+    }
+
+    pub fn host_player(&self) -> Option<&Player> {
+        self.header
+            .slots
+            .iter()
+            .find(|p| p.name == self.header.host_name)
+    }
+
+    pub fn players(&self) -> impl Iterator<Item = &Player> {
+        self.header.players()
+    }
+
+    pub fn observers(&self) -> impl Iterator<Item = &Player> {
+        self.header.observers()
+    }
+
+    pub fn slots(&self) -> &[Player] {
+        &self.header.slots
     }
 
     fn detect_format(reader: &mut R) -> Result<ReplayFormat, BroodrepError> {
