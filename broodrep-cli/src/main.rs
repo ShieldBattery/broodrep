@@ -33,7 +33,7 @@ fn display_replay_info(replay: &broodrep::Replay<std::fs::File>) {
     println!("  Engine:        {}", replay.engine());
 
     let duration = format_duration(replay.frames(), replay.game_speed());
-    println!("  Duration:      {}", duration);
+    println!("  Duration:      {duration}");
 
     if let Some(start_time) = replay.start_time() {
         println!(
@@ -44,12 +44,7 @@ fn display_replay_info(replay: &broodrep::Replay<std::fs::File>) {
 
     println!("  Title:         {}", replay.game_title());
     let (width, height) = replay.map_dimensions();
-    println!(
-        "  Map:           {} ({}x{})",
-        replay.map_name(),
-        width,
-        height
-    );
+    println!("  Map:           {} ({width}x{height})", replay.map_name(),);
     println!();
 
     // Game Settings Section
@@ -92,8 +87,5 @@ fn format_duration(frames: u32, speed: broodrep::GameSpeed) -> String {
     let total_seconds = total_duration.as_secs();
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;
-    format!(
-        "{}:{:02} ({} frames at {})",
-        minutes, seconds, frames, speed
-    )
+    format!("{minutes}:{seconds:02} ({frames} frames at {speed})")
 }
