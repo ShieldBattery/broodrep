@@ -1,5 +1,6 @@
 use std::{
     ffi::CStr,
+    fmt,
     io::{Cursor, Read, Seek, SeekFrom},
 };
 
@@ -340,6 +341,16 @@ pub enum ReplayFormat {
     Modern121,
 }
 
+impl fmt::Display for ReplayFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReplayFormat::Legacy => write!(f, "Legacy (pre-1.18)"),
+            ReplayFormat::Modern => write!(f, "Modern (1.18-1.21)"),
+            ReplayFormat::Modern121 => write!(f, "Modern (1.21+)"),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 struct SectionHeader {
     #[expect(dead_code)]
@@ -361,6 +372,16 @@ impl From<u8> for Engine {
             0 => Engine::StarCraft,
             1 => Engine::BroodWar,
             other => Engine::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for Engine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Engine::StarCraft => write!(f, "StarCraft"),
+            Engine::BroodWar => write!(f, "Brood War"),
+            Engine::Unknown(value) => write!(f, "Unknown ({})", value),
         }
     }
 }
@@ -389,6 +410,37 @@ impl TryFrom<u8> for GameSpeed {
             5 => Ok(GameSpeed::Faster),
             6 => Ok(GameSpeed::Fastest),
             _ => Err(BroodrepError::MalformedHeader("invalid game speed")),
+        }
+    }
+}
+
+impl GameSpeed {
+    /// Returns the duration per logical step for this game speed.
+    /// These timing values are based on StarCraft's actual frame timings.
+    pub fn time_per_step(self) -> std::time::Duration {
+        let millis = match self {
+            GameSpeed::Slowest => 167,
+            GameSpeed::Slower => 111,
+            GameSpeed::Slow => 83,
+            GameSpeed::Normal => 67,
+            GameSpeed::Fast => 56,
+            GameSpeed::Faster => 48,
+            GameSpeed::Fastest => 42,
+        };
+        std::time::Duration::from_millis(millis)
+    }
+}
+
+impl fmt::Display for GameSpeed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GameSpeed::Slowest => write!(f, "Slowest"),
+            GameSpeed::Slower => write!(f, "Slower"),
+            GameSpeed::Slow => write!(f, "Slow"),
+            GameSpeed::Normal => write!(f, "Normal"),
+            GameSpeed::Fast => write!(f, "Fast"),
+            GameSpeed::Faster => write!(f, "Faster"),
+            GameSpeed::Fastest => write!(f, "Fastest"),
         }
     }
 }
@@ -433,6 +485,28 @@ impl From<u16> for GameType {
             15 => GameType::TopVsBottom,
             // 16 => Iron Man Ladder in WC3
             other => GameType::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for GameType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GameType::None => write!(f, "None"),
+            GameType::Melee => write!(f, "Melee"),
+            GameType::FreeForAll => write!(f, "Free For All"),
+            GameType::OneOnOne => write!(f, "One on One"),
+            GameType::CaptureTheFlag => write!(f, "Capture The Flag"),
+            GameType::Greed => write!(f, "Greed"),
+            GameType::Slaughter => write!(f, "Slaughter"),
+            GameType::SuddenDeath => write!(f, "Sudden Death"),
+            GameType::Ladder => write!(f, "Ladder"),
+            GameType::UseMapSettings => write!(f, "Use Map Settings"),
+            GameType::TeamMelee => write!(f, "Team Melee"),
+            GameType::TeamFreeForAll => write!(f, "Team Free For All"),
+            GameType::TeamCaptureTheFlag => write!(f, "Team Capture The Flag"),
+            GameType::TopVsBottom => write!(f, "Top vs Bottom"),
+            GameType::Unknown(value) => write!(f, "Unknown ({})", value),
         }
     }
 }
@@ -536,6 +610,22 @@ impl TryFrom<u8> for PlayerType {
     }
 }
 
+impl fmt::Display for PlayerType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlayerType::Inactive => write!(f, "Inactive"),
+            PlayerType::Computer => write!(f, "Computer"),
+            PlayerType::Human => write!(f, "Human"),
+            PlayerType::RescuePassive => write!(f, "Rescue Passive"),
+            PlayerType::Unused => write!(f, "Unused"),
+            PlayerType::ComputerControlled => write!(f, "Computer Controlled"),
+            PlayerType::Open => write!(f, "Open"),
+            PlayerType::Neutral => write!(f, "Neutral"),
+            PlayerType::Closed => write!(f, "Closed"),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Race {
     Zerg = 0,
@@ -555,7 +645,18 @@ impl TryFrom<u8> for Race {
             1 => Ok(Race::Terran),
             2 => Ok(Race::Protoss),
             6 => Ok(Race::Random),
-            _ => Err(BroodrepError::MalformedHeader("invalid assigned race")),
+            _ => Err(BroodrepError::MalformedHeader("invalid race")),
+        }
+    }
+}
+
+impl fmt::Display for Race {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Race::Zerg => write!(f, "Zerg"),
+            Race::Terran => write!(f, "Terran"),
+            Race::Protoss => write!(f, "Protoss"),
+            Race::Random => write!(f, "Random"),
         }
     }
 }
