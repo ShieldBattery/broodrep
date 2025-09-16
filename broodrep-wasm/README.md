@@ -1,4 +1,4 @@
-# broodrep-wasm
+# @shieldbattery/broodrep
 
 WebAssembly bindings for the [broodrep](../broodrep/) StarCraft replay parser library.
 
