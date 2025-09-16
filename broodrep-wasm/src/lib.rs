@@ -145,13 +145,8 @@ pub fn parse_replay(data: Uint8Array, options: JsValue) -> Result<JsValue, JsVal
 
     let (map_width, map_height) = replay.map_dimensions();
 
-    // Convert all players
     let all_players: Vec<PlayerInfo> = replay.slots().iter().map(PlayerInfo::from).collect();
-
-    // Get active players (non-empty, non-observers)
     let active_players: Vec<PlayerInfo> = replay.players().map(PlayerInfo::from).collect();
-
-    // Get observers
     let observers: Vec<PlayerInfo> = replay.observers().map(PlayerInfo::from).collect();
 
     let replay_info = ReplayInfo {
@@ -172,7 +167,6 @@ pub fn parse_replay(data: Uint8Array, options: JsValue) -> Result<JsValue, JsVal
         observers,
     };
 
-    // Serialize to JsValue using serde-wasm-bindgen
     serde_wasm_bindgen::to_value(&replay_info)
         .map_err(|e| JsValue::from_str(&format!("Serialization failed: {}", e)))
 }
@@ -201,7 +195,6 @@ mod tests {
     use js_sys::Uint8Array;
     use wasm_bindgen_test::*;
 
-    // Test data (this would be actual replay file bytes in practice)
     const LEGACY_REPLAY: &[u8] = include_bytes!("../../broodrep/testdata/things.rep");
     const SCR_121_REPLAY: &[u8] = include_bytes!("../../broodrep/testdata/scr_replay.rep");
 
@@ -251,7 +244,6 @@ mod tests {
     fn test_parse_with_custom_options() {
         let data = Uint8Array::from(LEGACY_REPLAY);
 
-        // Create options as a plain JavaScript object
         let options = DecompressionOptions {
             max_decompressed_size: Some(200 * 1024 * 1024), // 200MB
             max_compression_ratio: Some(1000.0),            // Allow higher compression ratios
