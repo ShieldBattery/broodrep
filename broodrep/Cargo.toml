@@ -3,6 +3,8 @@ name = "broodrep"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/ShieldBattery/broodrep"
+description = "A pure Rust library for reading StarCraft 1 replay files"
 
 [dependencies]
 byteorder = "1.5"

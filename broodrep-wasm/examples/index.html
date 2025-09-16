@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>broodrep-wasm Demo</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+        background: #f5f5f5;
+      }
+
+      .container {
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        padding: 30px;
+      }
+
+      h1 {
+        color: #333;
+        text-align: center;
+        margin-bottom: 30px;
+      }
+
+      .upload-area {
+        border: 2px dashed #ddd;
+        border-radius: 8px;
+        padding: 40px;
+        text-align: center;
+        margin-bottom: 30px;
+        transition: border-color 0.3s ease;
+      }
+
+      .upload-area:hover {
+        border-color: #007acc;
+      }
+
+      .upload-area.dragover {
+        border-color: #007acc;
+        background: #f0f8ff;
+      }
+
+      input[type='file'] {
+        margin: 10px 0;
+        padding: 10px;
+      }
+
+      .status {
+        margin: 20px 0;
+        padding: 15px;
+        border-radius: 4px;
+        font-weight: bold;
+      }
+
+      .status.success {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+
+      .status.error {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+
+      .status.loading {
+        background: #d1ecf1;
+        color: #0c5460;
+        border: 1px solid #bee5eb;
+      }
+
+      .replay-info {
+        margin-top: 30px;
+      }
+
+      .info-section {
+        margin: 20px 0;
+        padding: 20px;
+        background: #f8f9fa;
+        border-radius: 4px;
+        border-left: 4px solid #007acc;
+      }
+
+      .info-section h3 {
+        margin-top: 0;
+        color: #007acc;
+      }
+
+      .info-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+        margin: 15px 0;
+      }
+
+      .info-item {
+        background: white;
+        padding: 10px;
+        border-radius: 4px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      }
+
+      .info-label {
+        font-weight: bold;
+        color: #666;
+        font-size: 0.9em;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 5px;
+      }
+
+      .info-value {
+        color: #333;
+        font-size: 1.1em;
+      }
+
+      .players-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 15px;
+      }
+
+      .players-table th,
+      .players-table td {
+        padding: 10px;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+      }
+
+      .players-table th {
+        background: #f8f9fa;
+        font-weight: bold;
+        color: #666;
+      }
+
+      .race-terran {
+        color: #ff6b6b;
+      }
+      .race-protoss {
+        color: #4ecdc4;
+      }
+      .race-zerg {
+        color: #9b59b6;
+      }
+      .race-random {
+        color: #95a5a6;
+      }
+
+      .observer {
+        opacity: 0.7;
+        font-style: italic;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>StarCraft Replay Parser Demo</h1>
+
+      <div class="upload-area" id="uploadArea">
+        <h3>Drop a StarCraft replay file here or click to select</h3>
+        <input type="file" id="fileInput" accept=".rep" />
+        <p>
+          Supports all StarCraft replay formats: Legacy (pre-1.18), Modern (1.18-1.21), and Modern
+          (1.21+)
+        </p>
+      </div>
+
+      <div id="status" class="status">Initializing&hellip;</div>
+
+      <div id="replayInfo" class="replay-info" style="display: none">
+        <div class="info-section">
+          <h3>Game Information</h3>
+          <div class="info-grid" id="gameInfo"></div>
+        </div>
+
+        <div class="info-section">
+          <h3>Map Information</h3>
+          <div class="info-grid" id="mapInfo"></div>
+        </div>
+
+        <div class="info-section">
+          <h3>Players</h3>
+          <table class="players-table" id="playersTable">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Race</th>
+                <th>Team</th>
+                <th>Type</th>
+                <th>Slot</th>
+              </tr>
+            </thead>
+            <tbody id="playersTableBody"></tbody>
+          </table>
+        </div>
+
+        <div class="info-section" id="observersSection" style="display: none">
+          <h3>Observers</h3>
+          <table class="players-table" id="observersTable">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Slot</th>
+              </tr>
+            </thead>
+            <tbody id="observersTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <script type="module">
+      import init, { parseReplay, version } from '../pkg/broodrep_wasm.js'
+
+      let wasmInitialized = false
+
+      const uploadArea = document.getElementById('uploadArea')
+      const fileInput = document.getElementById('fileInput')
+      const status = document.getElementById('status')
+      const replayInfo = document.getElementById('replayInfo')
+
+      // Initialize WASM
+      async function initWasm() {
+        if (!wasmInitialized) {
+          showStatus('Initializing WASM module...', 'loading')
+          try {
+            // The init function is async and loads the WASM module
+            await init()
+            wasmInitialized = true
+            console.log('broodrep-wasm version:', version())
+            showStatus('Ready! Select a replay file to parse.', 'success')
+          } catch (error) {
+            showStatus(`Failed to initialize WASM: ${error}`, 'error')
+          }
+        }
+      }
+
+      function showStatus(message, type) {
+        status.textContent = message
+        status.className = `status ${type}`
+        status.style.display = 'block'
+      }
+
+      function hideStatus() {
+        status.style.display = 'none'
+      }
+
+      function formatDate(timestamp) {
+        if (!timestamp) return 'Unknown'
+        return new Date(timestamp * 1000).toLocaleString()
+      }
+
+      function getRaceClass(race) {
+        return `race-${race.toLowerCase()}`
+      }
+
+      function displayReplayInfo(replay) {
+        // Game Information
+        const gameInfo = document.getElementById('gameInfo')
+        gameInfo.innerHTML = `
+                <div class="info-item">
+                    <div class="info-label">Title</div>
+                    <div class="info-value">${replay.gameTitle || 'Untitled'}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Format</div>
+                    <div class="info-value">${replay.format}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Engine</div>
+                    <div class="info-value">${replay.engine}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Game Type</div>
+                    <div class="info-value">${replay.gameType}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Speed</div>
+                    <div class="info-value">${replay.gameSpeed}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Frames</div>
+                    <div class="info-value">${replay.frames.toLocaleString()}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Started</div>
+                    <div class="info-value">${formatDate(replay.startTime)}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Host</div>
+                    <div class="info-value">${replay.hostName || 'Unknown'}</div>
+                </div>
+            `
+
+        // Map Information
+        const mapInfo = document.getElementById('mapInfo')
+        mapInfo.innerHTML = `
+                <div class="info-item">
+                    <div class="info-label">Map Name</div>
+                    <div class="info-value">${replay.mapName || 'Unknown'}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Dimensions</div>
+                    <div class="info-value">${replay.mapWidth} × ${replay.mapHeight}</div>
+                </div>
+            `
+
+        // Players
+        const playersTableBody = document.getElementById('playersTableBody')
+        playersTableBody.innerHTML = replay.activePlayers
+          .map(
+            player => `
+                <tr>
+                    <td><strong>${player.name}</strong></td>
+                    <td class="${getRaceClass(player.race)}">${player.race}</td>
+                    <td>${player.team}</td>
+                    <td>${player.playerType}</td>
+                    <td>${player.slotId}</td>
+                </tr>
+            `,
+          )
+          .join('')
+
+        // Observers
+        const observersSection = document.getElementById('observersSection')
+        const observersTableBody = document.getElementById('observersTableBody')
+
+        if (replay.observers.length > 0) {
+          observersSection.style.display = 'block'
+          observersTableBody.innerHTML = replay.observers
+            .map(
+              observer => `
+                    <tr class="observer">
+                        <td><strong>${observer.name}</strong></td>
+                        <td>${observer.playerType}</td>
+                        <td>${observer.slotId}</td>
+                    </tr>
+                `,
+            )
+            .join('')
+        } else {
+          observersSection.style.display = 'none'
+        }
+
+        replayInfo.style.display = 'block'
+      }
+
+      async function parseReplayFile(file) {
+        showStatus('Parsing replay...', 'loading')
+
+        try {
+          const arrayBuffer = await file.arrayBuffer()
+          const uint8Array = new Uint8Array(arrayBuffer)
+
+          const replay = parseReplay(uint8Array)
+
+          showStatus(`Successfully parsed ${file.name}!`, 'success')
+          displayReplayInfo(replay)
+
+          console.log('Parsed replay:', replay)
+        } catch (error) {
+          console.error('Parse error:', error)
+          showStatus(`Failed to parse replay: ${error}`, 'error')
+          replayInfo.style.display = 'none'
+        }
+      }
+
+      // File input handler
+      fileInput.addEventListener('change', async event => {
+        const file = event.target.files[0]
+        if (file) {
+          if (!wasmInitialized) {
+            await initWasm()
+          }
+          if (wasmInitialized) {
+            await parseReplayFile(file)
+          }
+        }
+      })
+
+      // Drag and drop handlers
+      uploadArea.addEventListener('dragover', event => {
+        event.preventDefault()
+        uploadArea.classList.add('dragover')
+      })
+
+      uploadArea.addEventListener('dragleave', () => {
+        uploadArea.classList.remove('dragover')
+      })
+
+      uploadArea.addEventListener('drop', async event => {
+        event.preventDefault()
+        uploadArea.classList.remove('dragover')
+
+        const files = event.dataTransfer.files
+        if (files.length > 0) {
+          const file = files[0]
+          if (!wasmInitialized) {
+            await initWasm()
+          }
+          if (wasmInitialized) {
+            await parseReplayFile(file)
+          }
+        }
+      })
+
+      uploadArea.addEventListener('click', () => {
+        fileInput.click()
+      })
+
+      // Initialize on load
+      initWasm()
+    </script>
+  </body>
+</html>

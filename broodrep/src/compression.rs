@@ -12,7 +12,7 @@ pub struct DecompressionConfig {
     /// Maximum compression ratio allowed (default: 500:1)
     pub max_compression_ratio: f64,
     /// Maximum time to spend decompressing (default: 30 seconds)
-    pub max_decompression_time: Duration,
+    pub max_decompression_time: Option<Duration>,
 }
 
 impl Default for DecompressionConfig {
@@ -20,7 +20,7 @@ impl Default for DecompressionConfig {
         Self {
             max_decompressed_size: 100 * 1024 * 1024, // 100MB
             max_compression_ratio: 500.0,
-            max_decompression_time: Duration::from_secs(30),
+            max_decompression_time: Some(Duration::from_secs(30)),
         }
     }
 }
@@ -44,7 +44,7 @@ pub struct SafeDecompressor<R: Read> {
     inner: Take<R>,
     max_decompressed_size: u64,
     max_ratio: f64,
-    max_time: Duration,
+    max_time: Option<Duration>,
     input_size: Option<u64>,
 
     start_time: Option<Instant>,
@@ -71,15 +71,16 @@ impl<R: Read> SafeDecompressor<R> {
 
 impl<R: Read> Read for SafeDecompressor<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.start_time.is_none() {
-            self.start_time = Some(Instant::now());
-        }
-
-        if self.start_time.map(|t| t.elapsed()).unwrap_or_default() > self.max_time {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                DecompressionError::TimeoutExceeded,
-            ));
+        if let Some(max_time) = self.max_time {
+            if self.start_time.is_none() {
+                self.start_time = Some(Instant::now());
+            }
+            if self.start_time.map(|t| t.elapsed()).unwrap_or_default() > max_time {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    DecompressionError::TimeoutExceeded,
+                ));
+            }
         }
 
         let bytes_read = self.inner.read(buf)?;
