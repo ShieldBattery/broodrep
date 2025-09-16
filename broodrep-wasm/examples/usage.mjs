@@ -11,7 +11,10 @@ import path from 'path'
 // Import the WASM module
 // Note: In a real project, you would install from npm and import normally:
 // import { parseReplay, version } from '@shieldbattery/broodrep';
-import { parseReplay, version } from '../pkg-node/broodrep_wasm.js'
+import { init, parseReplay, version } from '../pkg-node/broodrep_wasm.js'
+
+// Initialize the WASM module
+await init()
 
 /**
  * Example 1: Basic replay parsing

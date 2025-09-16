@@ -150,7 +150,7 @@ pnpm test
 See the [examples](./examples/) directory for complete usage examples:
 
 - `index.html` - Interactive web demo with file upload
-- `usage.js` - Comprehensive JavaScript examples
+- `usage.mjs` - Comprehensive JavaScript examples
 
 For the web version, run:
 
