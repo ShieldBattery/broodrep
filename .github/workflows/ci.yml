@@ -85,3 +85,43 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
     - name: Run clippy
       run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  wasm:
+    name: WASM
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        lfs: true
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - name: Install Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - name: Install pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 8
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cargo/bin
+          target
+        key: ${{ runner.os }}-wasm-${{ hashFiles('**/Cargo.lock') }}
+    - name: Install wasm-pack
+      run: |
+        if ! command -v wasm-pack &> /dev/null; then
+          cargo install wasm-pack --locked
+        fi
+    - name: Build WASM package
+      working-directory: broodrep-wasm
+      run: pnpm run build
+    - name: Test WASM package
+      working-directory: broodrep-wasm
+      run: pnpm run test
