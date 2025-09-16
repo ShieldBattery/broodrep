@@ -14,7 +14,7 @@ import path from 'path'
 import { init, parseReplay, version } from '../pkg-node/broodrep_wasm.js'
 
 // Initialize the WASM module
-await init()
+init()
 
 /**
  * Example 1: Basic replay parsing
