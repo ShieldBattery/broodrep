@@ -2,8 +2,11 @@
   "name": "@shieldbattery/broodrep",
   "version": "0.1.0",
   "description": "WebAssembly bindings for the broodrep StarCraft replay parser",
-  "main": "pkg/broodrep_wasm.js",
+  "main": "pkg-node/broodrep_wasm.js",
   "types": "pkg/broodrep_wasm.d.ts",
+  "engines": {
+    "node": ">= 22.12.0"
+  },
   "exports": {
     ".": {
       "import": {
