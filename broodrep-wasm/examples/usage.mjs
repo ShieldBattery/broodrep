@@ -38,15 +38,16 @@ function basicExample() {
     const uint8Array = new Uint8Array(replayData)
 
     // Parse the replay
-    const replayInfo = parseReplay(uint8Array)
+    const replay = parseReplay(uint8Array)
+    const header = replay.header
 
     console.log('✓ Successfully parsed replay!')
-    console.log(`  Title: ${replayInfo.gameTitle}`)
-    console.log(`  Map: ${replayInfo.mapName}`)
-    console.log(`  Format: ${replayInfo.format}`)
-    console.log(`  Engine: ${replayInfo.engine}`)
-    console.log(`  Players: ${replayInfo.activePlayers.length}`)
-    console.log(`  Observers: ${replayInfo.observers.length}`)
+    console.log(`  Title: ${header.title}`)
+    console.log(`  Map: ${header.mapName}`)
+    console.log(`  Format: ${replay.format}`)
+    console.log(`  Engine: ${header.engine}`)
+    console.log(`  Players: ${replay.players().filter(p => !p.isEmpty && !p.isObserver).length}`)
+    console.log(`  Observers: ${replay.observers().length}`)
   } catch (error) {
     console.error('✗ Failed to parse replay:', error)
   }
@@ -76,33 +77,35 @@ function detailedExample() {
     const replayData = fs.readFileSync(testReplayPath)
     const uint8Array = new Uint8Array(replayData)
     const replay = parseReplay(uint8Array)
+    const header = replay.header
 
     // Game information
     console.log('Game Information:')
-    console.log(`  Title: ${replay.gameTitle}`)
+    console.log(`  Title: ${header.title}`)
     console.log(`  Format: ${replay.format}`)
-    console.log(`  Engine: ${replay.engine}`)
-    console.log(`  Game Type: ${replay.gameType}`)
-    console.log(`  Speed: ${replay.gameSpeed}`)
-    console.log(`  Frames: ${replay.frames.toLocaleString()}`)
+    console.log(`  Engine: ${header.engine}`)
+    console.log(`  Game Type: ${header.gameType}`)
+    console.log(`  Speed: ${header.speed}`)
+    console.log(`  Frames: ${header.frames.toLocaleString()}`)
 
-    if (replay.startTime) {
-      const startDate = new Date(replay.startTime * 1000)
+    if (header.startTime) {
+      const startDate = new Date(header.startTime * 1000)
       console.log(`  Started: ${startDate.toLocaleString()}`)
     }
 
     // Map information
     console.log('\nMap Information:')
-    console.log(`  Name: ${replay.mapName}`)
-    console.log(`  Dimensions: ${replay.mapWidth} × ${replay.mapHeight}`)
+    console.log(`  Name: ${header.mapName}`)
+    console.log(`  Dimensions: ${header.mapWidth} × ${header.mapHeight}`)
 
     // Host information
     console.log('\nHost Information:')
-    console.log(`  Host: ${replay.hostName || 'Unknown'}`)
+    console.log(`  Host: ${header.hostName || 'Unknown'}`)
 
     // Players
+    const activePlayers = replay.players().filter(p => !p.isEmpty && !p.isObserver)
     console.log('\nActive Players:')
-    replay.activePlayers.forEach((player, index) => {
+    activePlayers.forEach((player, index) => {
       console.log(`  ${index + 1}. ${player.name}`)
       console.log(`     Race: ${player.race}`)
       console.log(`     Team: ${player.team}`)
@@ -111,16 +114,18 @@ function detailedExample() {
     })
 
     // Observers
-    if (replay.observers.length > 0) {
+    const observers = replay.observers()
+    if (observers.length > 0) {
       console.log('\nObservers:')
-      replay.observers.forEach((observer, index) => {
+      observers.forEach((observer, index) => {
         console.log(`  ${index + 1}. ${observer.name} (${observer.playerType})`)
       })
     }
 
     // All slots (including empty)
-    console.log(`\nTotal Slots: ${replay.players.length}`)
-    console.log(`Empty Slots: ${replay.players.filter(p => p.isEmpty).length}`)
+    const allSlots = replay.slots()
+    console.log(`\nTotal Slots: ${allSlots.length}`)
+    console.log(`Empty Slots: ${allSlots.filter(p => p.isEmpty).length}`)
   } catch (error) {
     console.error('✗ Failed to parse replay:', error)
   }
@@ -191,10 +196,11 @@ function customOptionsExample() {
 
     // Parse with custom options
     const replay = parseReplay(uint8Array, options)
+    const header = replay.header
 
     console.log('✓ Successfully parsed replay with custom options!')
-    console.log(`  Game: ${replay.gameTitle}`)
-    console.log(`  Players: ${replay.activePlayers.length}`)
+    console.log(`  Game: ${header.title}`)
+    console.log(`  Players: ${replay.players().filter(p => !p.isEmpty && !p.isObserver).length}`)
 
     // Compare with default parsing
     const replayDefault = parseReplay(uint8Array) // No options = use defaults
@@ -210,6 +216,7 @@ console.log('============================')
 basicExample()
 detailedExample()
 errorHandlingExample()
+customOptionsExample()
 
 console.log('\n✓ All examples completed!')
 console.log('\nTip: To use in your project:')

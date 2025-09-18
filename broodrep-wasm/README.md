@@ -26,11 +26,12 @@ fileInput.addEventListener('change', async event => {
   const uint8Array = new Uint8Array(arrayBuffer)
 
   try {
-    const replayInfo = parseReplay(uint8Array)
-    console.log('Replay parsed:', replayInfo)
-    console.log('Game title:', replayInfo.gameTitle)
-    console.log('Map name:', replayInfo.mapName)
-    console.log('Players:', replayInfo.activePlayers)
+    const replay = parseReplay(uint8Array)
+    const header = replay.header
+    console.log('Replay parsed:', replay)
+    console.log('Game title:', header.title)
+    console.log('Map name:', header.mapName)
+    console.log('Players:', replay.players().filter(p => !p.isEmpty && !p.isObserver))
   } catch (error) {
     console.error('Failed to parse replay:', error)
   }
@@ -48,12 +49,13 @@ const replayData = fs.readFileSync('example.rep')
 const uint8Array = new Uint8Array(replayData)
 
 try {
-  const replayInfo = parseReplay(uint8Array)
-  console.log('Game:', replayInfo.gameTitle)
-  console.log('Map:', replayInfo.mapName)
-  console.log('Format:', replayInfo.format)
-  console.log('Engine:', replayInfo.engine)
-  console.log('Players:', replayInfo.activePlayers.length)
+  const replay = parseReplay(uint8Array)
+  const header = replay.header
+  console.log('Game:', header.title)
+  console.log('Map:', header.mapName)
+  console.log('Format:', replay.format)
+  console.log('Engine:', header.engine)
+  console.log('Players:', replay.players().filter(p => !p.isEmpty && !p.isObserver).length)
 } catch (error) {
   console.error('Failed to parse replay:', error)
 }
@@ -61,41 +63,53 @@ try {
 
 ## API Reference
 
-### `parseReplay(data: Uint8Array, options?: DecompressionOptions): ReplayInfo`
+### `parseReplay(data: Uint8Array, options?: DecompressionConfig): Replay`
 
-Parses a StarCraft replay file and returns detailed information about the game.
+Parses a StarCraft replay file and returns a Replay object for retrieving game information.
 
 **Parameters:**
 
 - `data`: A `Uint8Array` containing the replay file bytes
 - `options`: Optional decompression configuration to customize security limits
 
-**Returns:** A `ReplayInfo` object containing:
+**Returns:** A `Replay` object with the following interface:
 
 ```typescript
-interface ReplayInfo {
-  format: string // "Legacy (pre-1.18)", "Modern (1.18-1.21)", or "Modern (1.21+)"
-  engine: string // "StarCraft" or "Brood War"
-  frames: number // Number of game frames
-  startTime: number | null // Unix timestamp of game start (or null if invalid)
-  gameTitle: string // Game title
-  mapName: string // Map name
-  mapWidth: number // Map width in tiles
-  mapHeight: number // Map height in tiles
-  gameSpeed: string // Game speed setting
-  gameType: string // Game type (e.g., "Melee", "Free For All")
-  gameSubType: number // Game sub-type value
-  hostName: string // Name of the game host
-  players: PlayerInfo[] // All player slots (including empty)
-  activePlayers: PlayerInfo[] // Only active players (non-empty, non-observers)
-  observers: PlayerInfo[] // Only observers
+class Replay {
+  readonly format: ReplayFormat // "legacy", "modern", or "modern121"
+  readonly header: ReplayHeader // Game header information
+  
+  // Methods for retrieving player information
+  players(): Player[] // All player slots (including empty)
+  observers(): Player[] // Only observers
+  slots(): Player[] // All slots
+  hostPlayer(): Player | undefined // The host player if identifiable
+  
+  // Methods for retrieving raw section data
+  getRawSection(section: ReplaySection): Uint8Array | undefined
+  getRawCustomSection(section_id: number): Uint8Array | undefined
 }
 
-interface PlayerInfo {
-  slotId: number // Map slot ID
-  networkId: number // Network ID
-  playerType: string // "Human", "Computer", etc.
-  race: string // "Terran", "Protoss", "Zerg", "Random"
+interface ReplayHeader {
+  engine: Engine // "starCraft", "broodWar", or "unknown"
+  frames: number // Number of game frames
+  startTime: number // Unix timestamp of game start
+  title: string // Game title
+  mapWidth: number // Map width in tiles
+  mapHeight: number // Map height in tiles
+  availableSlots: number // Number of available player slots
+  speed: GameSpeed // Game speed setting
+  gameType: GameType // Game type (e.g., "melee", "freeForAll")
+  gameSubType: number // Game sub-type value
+  hostName: string // Name of the game host
+  mapName: string // Map name
+}
+
+interface Player {
+  slotId: number // Map slot ID (post-randomization)
+  networkId: number // Network ID (255 for computer, 128-131 for observers)
+  playerType: PlayerType // "inactive", "computer", "human", etc.
+  race: Race // "zerg", "terran", "protoss", "random"
   team: number // Team number
   name: string // Player name
   isEmpty: boolean // Whether this is an empty slot
@@ -103,18 +117,18 @@ interface PlayerInfo {
 }
 ```
 
-### `DecompressionOptions`
+### `DecompressionConfig`
 
-Configuration class for customizing security limits during replay parsing.
+Configuration object for customizing security limits during replay parsing.
 
 ```javascript
-import { DecompressionOptions } from './pkg/broodrep_wasm.js'
+// Create decompression config object
+const options = {
+  maxDecompressedSize: 200 * 1024 * 1024, // 200MB
+  maxCompressionRatio: 1000.0 // Allow 1000:1 compression ratio
+}
 
-const options = new DecompressionOptions()
-options.maxDecompressedSize = 200 * 1024 * 1024 // 200MB
-options.maxCompressionRatio = 1000.0 // Allow 1000:1 compression ratio
-
-const replayInfo = parseReplay(replayData, options)
+const replay = parseReplay(replayData, options)
 ```
 
 **Properties:**

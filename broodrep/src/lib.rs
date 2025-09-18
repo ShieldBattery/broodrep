@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ffi::CStr,
     fmt,
     io::{Cursor, Read, Seek, SeekFrom},
@@ -23,13 +24,30 @@ pub enum BroodrepError {
     MalformedHeader(&'static str),
     #[error("problem decompressing data: {0}")]
     Decompression(#[from] DecompressionError),
+    #[error("duplicate section found: {0:?}")]
+    DuplicateSection(ReplaySection),
 }
 
+/// A StarCraft replay, parsed from a [Read] implementation. Only the header will be parsed eagerly,
+/// all other sections are processed/parsed on demand.
 pub struct Replay<R: Read + Seek> {
     inner: R,
-    format: ReplayFormat,
+    decompression_config: DecompressionConfig,
+    /// Offsets from the beginning of the file to the header for a particular section. For modern
+    /// sections, this will be the offset of the raw data size. For legacy sections, it's the offset
+    /// of the section header.
+    section_offsets: HashMap<ReplaySection, u64>,
+    pub format: ReplayFormat,
     pub header: ReplayHeader,
 }
+
+const SIZE_HEADER: usize = 0x279;
+const SIZE_PLAYER_NAMES: usize = 0x300;
+const SIZE_SKINS: usize = 0x15e0;
+const SIZE_LIMITS: usize = 0x1c;
+const SIZE_BFIX: usize = 0x08;
+const SIZE_CUSTOM_COLORS: usize = 0xc0;
+const SIZE_GCFG: usize = 0x19;
 
 impl<R: Read + Seek> Replay<R> {
     /// Creates a new Replay by parsing data from a [Read] implementation with default settings for
@@ -70,13 +88,63 @@ impl<R: Read + Seek> Replay<R> {
             reader.read_u32::<LE>()?;
         }
 
-        // Replay header section
-        let replay_header = Self::read_legacy_section(&mut reader, format, config)?;
+        let mut section_offsets = HashMap::new();
+
+        section_offsets.insert(ReplaySection::Header, reader.stream_position()?);
+        let replay_header =
+            Self::read_legacy_section(&mut reader, format, config, Some(SIZE_HEADER))?;
         let replay_header = Self::parse_replay_header(&replay_header)?;
+
+        let r = || -> Result<(), BroodrepError> {
+            // NOTE(tec27): Dynamically sized legacy sections (commands, map data) have a section
+            // before them that specifies their total uncompressed size, so we need to effectively
+            // skip 2 sections for those
+            Self::skip_legacy_section(&mut reader)?;
+            section_offsets.insert(ReplaySection::Commands, reader.stream_position()?);
+            Self::skip_legacy_section(&mut reader)?;
+
+            Self::skip_legacy_section(&mut reader)?;
+            section_offsets.insert(ReplaySection::MapData, reader.stream_position()?);
+            Self::skip_legacy_section(&mut reader)?;
+
+            section_offsets.insert(ReplaySection::PlayerNames, reader.stream_position()?);
+            // TODO(tec27): Probably we should read this here and update the header player names as
+            // needed
+            Self::skip_legacy_section(&mut reader)?;
+
+            // Modern sections
+            if format != ReplayFormat::Legacy {
+                loop {
+                    let mut section_id = [0u8; 4];
+                    reader.read_exact(&mut section_id)?;
+
+                    let section: ReplaySection = section_id.into();
+                    if section_offsets.contains_key(&section) {
+                        // TODO(tec27): Should we actually handle this instead? No SC:R replay should
+                        // ever have this but other clients might
+                        return Err(BroodrepError::DuplicateSection(section));
+                    }
+                    section_offsets.insert(section, reader.stream_position()?);
+                    let size = reader.read_u32::<LE>()?;
+                    reader.seek(SeekFrom::Current(size as i64))?;
+                }
+            }
+
+            Ok(())
+        }();
+
+        match r {
+            Ok(_) => {}
+            // Eof after the header is "ok", other sections are non-essential
+            Err(BroodrepError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {}
+            Err(e) => return Err(e),
+        }
 
         Ok(Replay {
             inner: reader,
+            decompression_config: config,
             format,
+            section_offsets,
             header: replay_header,
         })
     }
@@ -154,6 +222,35 @@ impl<R: Read + Seek> Replay<R> {
         &self.header.slots
     }
 
+    /// Returns the raw bytes of a given replay section, or [None] if not present in the replay
+    /// file. The bytes will be decompressed if it is a section with known compression.
+    pub fn get_raw_section(
+        &mut self,
+        section: ReplaySection,
+    ) -> Result<Option<Vec<u8>>, BroodrepError> {
+        let offset = match self.section_offsets.get(&section) {
+            Some(o) => *o,
+            None => return Ok(None),
+        };
+
+        if section.is_modern() {
+            self.inner.seek(SeekFrom::Start(offset))?;
+            let size = self.inner.read_u32::<LE>()?;
+            let mut data = vec![0; size as usize];
+            self.inner.read_exact(&mut data)?;
+            Ok(Some(data))
+        } else {
+            self.inner.seek(SeekFrom::Start(offset))?;
+            let bytes = Self::read_legacy_section(
+                &mut self.inner,
+                self.format,
+                self.decompression_config,
+                section.size_hint(),
+            )?;
+            Ok(Some(bytes))
+        }
+    }
+
     fn detect_format(reader: &mut R) -> Result<ReplayFormat, BroodrepError> {
         // 1.21+ has `seRS`, before that it's `reRS`
         reader.seek(SeekFrom::Start(12))?;
@@ -191,10 +288,10 @@ impl<R: Read + Seek> Replay<R> {
         reader: &mut R,
         format: ReplayFormat,
         config: DecompressionConfig,
+        size_hint: Option<usize>,
     ) -> Result<Vec<u8>, BroodrepError> {
         let header = Self::read_section_header(reader)?;
-        // TODO(tec27): Pass a size hint for known sections to avoid reallocations?
-        let mut data = Vec::new();
+        let mut data = Vec::with_capacity(size_hint.unwrap_or(0));
         for _ in 0..header.num_chunks {
             let size = reader.read_u32::<LE>()?;
             data.reserve(size as usize);
@@ -230,6 +327,16 @@ impl<R: Read + Seek> Replay<R> {
         }
 
         Ok(data)
+    }
+
+    /// Reads the header and then skips over a section without parsing it.
+    fn skip_legacy_section(reader: &mut R) -> Result<(), BroodrepError> {
+        let header = Self::read_section_header(reader)?;
+        for _ in 0..header.num_chunks {
+            let size = reader.read_u32::<LE>()?;
+            reader.seek(SeekFrom::Current(size as i64))?;
+        }
+        Ok(())
     }
 
     fn parse_replay_header(data: &[u8]) -> Result<ReplayHeader, BroodrepError> {
@@ -348,6 +455,84 @@ impl fmt::Display for ReplayFormat {
             ReplayFormat::Modern => write!(f, "Modern (1.18-1.21)"),
             ReplayFormat::Modern121 => write!(f, "Modern (1.21+)"),
         }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum ReplaySection {
+    /// Header containing basic game information and player slots
+    Header,
+    /// Commands issued by players during the game
+    Commands,
+    /// CHK map data
+    MapData,
+    /// Longer strings for player names (that also seem to always be utf-8, so safer to decode)
+    PlayerNames,
+    /// Building/unit skin settings for players
+    Skins,
+    /// Unit/sprite limits for the game
+    Limits,
+    /// Bug fix(es)? TODO(tec27): Figure out what this actually is :)
+    Bfix,
+    /// Custom (extended) team color settings
+    CustomColors,
+    /// Game configuration? TODO(tec27): Figure out what this actually is :)
+    Gcfg,
+
+    // Non-official sections
+    ShieldBattery,
+
+    /// Any section that is not one of the "official" types, or directly supported by broodrep
+    Custom([u8; 4]),
+}
+
+impl ReplaySection {
+    /// Returns whether a section is "modern", meaning it was added in SC:R's replay format and
+    /// includes a section ID + size before the actual data.
+    pub fn is_modern(&self) -> bool {
+        matches!(
+            self,
+            ReplaySection::Skins
+                | ReplaySection::Limits
+                | ReplaySection::Bfix
+                | ReplaySection::CustomColors
+                | ReplaySection::Gcfg
+                | ReplaySection::ShieldBattery
+                | ReplaySection::Custom(_)
+        )
+    }
+
+    pub fn size_hint(&self) -> Option<usize> {
+        match self {
+            ReplaySection::Header => Some(SIZE_HEADER),
+            ReplaySection::PlayerNames => Some(SIZE_PLAYER_NAMES),
+            ReplaySection::Skins => Some(SIZE_SKINS),
+            ReplaySection::Limits => Some(SIZE_LIMITS),
+            ReplaySection::Bfix => Some(SIZE_BFIX),
+            ReplaySection::CustomColors => Some(SIZE_CUSTOM_COLORS),
+            ReplaySection::Gcfg => Some(SIZE_GCFG),
+            _ => None,
+        }
+    }
+}
+
+impl From<&[u8; 4]> for ReplaySection {
+    fn from(value: &[u8; 4]) -> Self {
+        match value {
+            b"SKIN" => ReplaySection::Skins,
+            b"LMTS" => ReplaySection::Limits,
+            b"BFIX" => ReplaySection::Bfix,
+            b"CCLR" => ReplaySection::CustomColors,
+            b"GCFG" => ReplaySection::Gcfg,
+            b"Sbat" => ReplaySection::ShieldBattery,
+            id => ReplaySection::Custom(*id),
+        }
+    }
+}
+
+impl From<[u8; 4]> for ReplaySection {
+    fn from(value: [u8; 4]) -> Self {
+        (&value).into()
     }
 }
 
@@ -644,8 +829,7 @@ impl TryFrom<u8> for Race {
             0 => Ok(Race::Zerg),
             1 => Ok(Race::Terran),
             2 => Ok(Race::Protoss),
-            6 => Ok(Race::Random),
-            _ => Err(BroodrepError::MalformedHeader("invalid race")),
+            _ => Ok(Race::Random),
         }
     }
 }

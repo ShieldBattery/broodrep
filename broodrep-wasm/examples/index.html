@@ -261,12 +261,17 @@
       }
 
       function displayReplayInfo(replay) {
+        // Cache header for efficiency
+        const header = replay.header
+        const activePlayers = replay.players().filter(p => !p.isEmpty && !p.isObserver)
+        const observers = replay.observers()
+
         // Game Information
         const gameInfo = document.getElementById('gameInfo')
         gameInfo.innerHTML = `
                 <div class="info-item">
                     <div class="info-label">Title</div>
-                    <div class="info-value">${replay.gameTitle || 'Untitled'}</div>
+                    <div class="info-value">${header.title || 'Untitled'}</div>
                 </div>
                 <div class="info-item">
                     <div class="info-label">Format</div>
@@ -274,27 +279,27 @@
                 </div>
                 <div class="info-item">
                     <div class="info-label">Engine</div>
-                    <div class="info-value">${replay.engine}</div>
+                    <div class="info-value">${header.engine}</div>
                 </div>
                 <div class="info-item">
                     <div class="info-label">Game Type</div>
-                    <div class="info-value">${replay.gameType}</div>
+                    <div class="info-value">${header.gameType}</div>
                 </div>
                 <div class="info-item">
                     <div class="info-label">Speed</div>
-                    <div class="info-value">${replay.gameSpeed}</div>
+                    <div class="info-value">${header.speed}</div>
                 </div>
                 <div class="info-item">
                     <div class="info-label">Frames</div>
-                    <div class="info-value">${replay.frames.toLocaleString()}</div>
+                    <div class="info-value">${header.frames.toLocaleString()}</div>
                 </div>
                 <div class="info-item">
                     <div class="info-label">Started</div>
-                    <div class="info-value">${formatDate(replay.startTime)}</div>
+                    <div class="info-value">${formatDate(header.startTime)}</div>
                 </div>
                 <div class="info-item">
                     <div class="info-label">Host</div>
-                    <div class="info-value">${replay.hostName || 'Unknown'}</div>
+                    <div class="info-value">${header.hostName || 'Unknown'}</div>
                 </div>
             `
 
@@ -303,17 +308,17 @@
         mapInfo.innerHTML = `
                 <div class="info-item">
                     <div class="info-label">Map Name</div>
-                    <div class="info-value">${replay.mapName || 'Unknown'}</div>
+                    <div class="info-value">${header.mapName || 'Unknown'}</div>
                 </div>
                 <div class="info-item">
                     <div class="info-label">Dimensions</div>
-                    <div class="info-value">${replay.mapWidth} × ${replay.mapHeight}</div>
+                    <div class="info-value">${header.mapWidth} × ${header.mapHeight}</div>
                 </div>
             `
 
         // Players
         const playersTableBody = document.getElementById('playersTableBody')
-        playersTableBody.innerHTML = replay.activePlayers
+        playersTableBody.innerHTML = activePlayers
           .map(
             player => `
                 <tr>
@@ -331,9 +336,9 @@
         const observersSection = document.getElementById('observersSection')
         const observersTableBody = document.getElementById('observersTableBody')
 
-        if (replay.observers.length > 0) {
+        if (observers.length > 0) {
           observersSection.style.display = 'block'
-          observersTableBody.innerHTML = replay.observers
+          observersTableBody.innerHTML = observers
             .map(
               observer => `
                     <tr class="observer">
