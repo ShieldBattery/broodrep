@@ -965,4 +965,83 @@ mod tests {
         let observers = replay.header.observers().collect::<Vec<_>>();
         assert_eq!(observers.len(), 0);
     }
+
+    #[test]
+    fn replay_sections_legacy() {
+        let mut cursor = Cursor::new(LEGACY);
+        let replay = Replay::new(&mut cursor).unwrap();
+
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::Header),
+            Some(&16)
+        );
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::Commands),
+            Some(&227)
+        );
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::MapData),
+            Some(&482)
+        );
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::PlayerNames),
+            Some(&74769)
+        );
+        assert_eq!(replay.section_offsets.get(&ReplaySection::Skins), None);
+        assert_eq!(replay.section_offsets.get(&ReplaySection::Limits), None);
+        assert_eq!(replay.section_offsets.get(&ReplaySection::Bfix), None);
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::CustomColors),
+            None
+        );
+        assert_eq!(replay.section_offsets.get(&ReplaySection::Gcfg), None);
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::ShieldBattery),
+            None
+        );
+    }
+
+    #[test]
+    fn replay_sections_scr_121() {
+        let mut cursor = Cursor::new(SCR_121);
+        let replay = Replay::new(&mut cursor).unwrap();
+
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::Header),
+            Some(&20)
+        );
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::Commands),
+            Some(&225)
+        );
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::MapData),
+            Some(&288)
+        );
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::PlayerNames),
+            Some(&44123)
+        );
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::Skins),
+            Some(&44222)
+        );
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::Limits),
+            Some(&44282)
+        );
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::Bfix),
+            Some(&44330)
+        );
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::CustomColors),
+            Some(&44358)
+        );
+        assert_eq!(replay.section_offsets.get(&ReplaySection::Gcfg), None);
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::ShieldBattery),
+            None
+        );
+    }
 }
