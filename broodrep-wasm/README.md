@@ -31,7 +31,10 @@ fileInput.addEventListener('change', async event => {
     console.log('Replay parsed:', replay)
     console.log('Game title:', header.title)
     console.log('Map name:', header.mapName)
-    console.log('Players:', replay.players().filter(p => !p.isEmpty && !p.isObserver))
+    console.log(
+      'Players:',
+      replay.players().filter(p => !p.isEmpty && !p.isObserver),
+    )
   } catch (error) {
     console.error('Failed to parse replay:', error)
   }
@@ -78,16 +81,19 @@ Parses a StarCraft replay file and returns a Replay object for retrieving game i
 class Replay {
   readonly format: ReplayFormat // "legacy", "modern", or "modern121"
   readonly header: ReplayHeader // Game header information
-  
+
   // Methods for retrieving player information
   players(): Player[] // All player slots (including empty)
   observers(): Player[] // Only observers
   slots(): Player[] // All slots
   hostPlayer(): Player | undefined // The host player if identifiable
-  
+
   // Methods for retrieving raw section data
   getRawSection(section: ReplaySection): Uint8Array | undefined
   getRawCustomSection(section_id: number): Uint8Array | undefined
+
+  // Method for retrieving parsed ShieldBattery data
+  getShieldBatterySection(): ShieldBatteryData | undefined
 }
 
 interface ReplayHeader {
@@ -115,6 +121,29 @@ interface Player {
   isEmpty: boolean // Whether this is an empty slot
   isObserver: boolean // Whether this is an observer
 }
+
+interface ShieldBatteryData {
+  starcraftExeBuild: number // StarCraft executable build number
+  shieldbatteryVersion: string // ShieldBattery client version
+  teamGameMainPlayers: [number, number, number, number] // Main players in team games
+  startingRaces: [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ] // Starting race for each player
+  gameId: string // Game UUID on ShieldBattery
+  userIds: [number, number, number, number, number, number, number, number] // ShieldBattery user IDs
+  gameLogicVersion: number | undefined // Game logic version (if available)
+}
 ```
 
 ### `DecompressionConfig`
@@ -125,7 +154,7 @@ Configuration object for customizing security limits during replay parsing.
 // Create decompression config object
 const options = {
   maxDecompressedSize: 200 * 1024 * 1024, // 200MB
-  maxCompressionRatio: 1000.0 // Allow 1000:1 compression ratio
+  maxCompressionRatio: 1000.0, // Allow 1000:1 compression ratio
 }
 
 const replay = parseReplay(replayData, options)
@@ -142,6 +171,54 @@ configured due to limitations of Rust's time implementation.
 ### `version(): string`
 
 Returns the version of the broodrep library.
+
+## ShieldBattery Support
+
+The library includes support for parsing ShieldBattery-specific data from replays created through the [ShieldBattery](https://shieldbattery.net/) platform. This data provides additional context about games played on ShieldBattery.
+
+### Basic Usage
+
+```javascript
+import { parseReplay } from '@shieldbattery/broodrep'
+
+// Parse a replay
+const replay = parseReplay(replayData)
+
+// Check for ShieldBattery data
+const shieldBatteryData = replay.getShieldBatterySection()
+
+if (shieldBatteryData) {
+  console.log('Game ID:', shieldBatteryData.gameId)
+  console.log('StarCraft Build:', shieldBatteryData.starcraftExeBuild)
+  console.log('ShieldBattery Version:', shieldBatteryData.shieldbatteryVersion)
+
+  // Game logic version (if available in newer format)
+  if (shieldBatteryData.gameLogicVersion !== undefined) {
+    console.log('Game Logic Version:', shieldBatteryData.gameLogicVersion)
+  }
+
+  // User IDs of active players
+  const activeUserIds = shieldBatteryData.userIds.filter(id => id !== 0)
+  console.log('User IDs:', activeUserIds)
+
+  // Starting races as numbers (0=Zerg, 1=Terran, 2=Protoss, 6=Random)
+  const activePlayers = replay.players().filter(p => !p.isEmpty && !p.isObserver)
+  const startingRaces = shieldBatteryData.startingRaces.slice(0, activePlayers.length)
+  console.log('Starting Races:', startingRaces)
+} else {
+  console.log('No ShieldBattery data (normal for non-ShieldBattery replays)')
+}
+```
+
+### ShieldBatteryData Fields
+
+- **`gameId`**: Unique UUID for the game on ShieldBattery platform
+- **`starcraftExeBuild`**: Build number of the StarCraft executable used
+- **`shieldbatteryVersion`**: Version string of the ShieldBattery client
+- **`gameLogicVersion`**: Version of game logic modifications (if available)
+- **`userIds`**: Array of ShieldBattery user IDs corresponding to players
+- **`teamGameMainPlayers`**: Identifies main players in team games
+- **`startingRaces`**: Original race selection for each player slot (before randomization)
 
 ## Building
 

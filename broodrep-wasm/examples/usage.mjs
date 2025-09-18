@@ -210,6 +210,100 @@ function customOptionsExample() {
   }
 }
 
+/**
+ * Example 5: ShieldBattery data extraction
+ */
+function shieldBatteryExample() {
+  console.log('\n=== ShieldBattery Data Example ===')
+
+  // Try to find a ShieldBattery replay
+  const sbReplayPath = path.join(
+    import.meta.dirname,
+    '..',
+    '..',
+    'broodrep',
+    'testdata',
+    'sb_data.rep',
+  )
+
+  let testReplayPath = sbReplayPath
+  if (!fs.existsSync(sbReplayPath)) {
+    // Fall back to a regular replay for demonstration
+    testReplayPath = path.join(
+      import.meta.dirname,
+      '..',
+      '..',
+      'broodrep',
+      'testdata',
+      'things.rep',
+    )
+    console.log('No ShieldBattery replay found, using regular replay for demonstration...')
+  }
+
+  if (!fs.existsSync(testReplayPath)) {
+    console.log('No test replay found, skipping ShieldBattery example...')
+    return
+  }
+
+  try {
+    const replayData = fs.readFileSync(testReplayPath)
+    const uint8Array = new Uint8Array(replayData)
+    const replay = parseReplay(uint8Array)
+
+    // Try to get ShieldBattery data
+    const shieldBatteryData = replay.getShieldBatterySection()
+
+    if (shieldBatteryData) {
+      console.log('✓ Found ShieldBattery data!')
+      console.log('ShieldBattery Information:')
+      console.log(`  Game ID: ${shieldBatteryData.gameId}`)
+      console.log(`  StarCraft Build: ${shieldBatteryData.starcraftExeBuild}`)
+      console.log(`  ShieldBattery Version: ${shieldBatteryData.shieldbatteryVersion}`)
+
+      if (shieldBatteryData.gameLogicVersion !== undefined) {
+        console.log(`  Game Logic Version: ${shieldBatteryData.gameLogicVersion}`)
+      }
+
+      // Show team game main players (if applicable)
+      const mainPlayers = shieldBatteryData.teamGameMainPlayers
+      console.log(`  Team Game Main Players: [${mainPlayers.join(', ')}]`)
+
+      // Show user IDs
+      const activeUserIds = shieldBatteryData.userIds.filter(id => id !== 0)
+      if (activeUserIds.length > 0) {
+        console.log(`  User IDs: [${activeUserIds.join(', ')}]`)
+      }
+
+      // Show starting races (as race names)
+      const raceNames = ['Zerg', 'Terran', 'Protoss']
+      const startingRaces = shieldBatteryData.startingRaces.map(race => raceNames[race] || 'Random')
+
+      if (startingRaces.length > 0) {
+        console.log(`  Starting Races: [${startingRaces.join(', ')}]`)
+      }
+    } else {
+      console.log('ℹ No ShieldBattery data found in this replay')
+      console.log('  This is normal for replays not created through ShieldBattery')
+    }
+
+    // Also demonstrate raw section access
+    console.log('\nRaw Section Access:')
+    const headerSection = replay.getRawSection('header')
+    if (headerSection) {
+      console.log(`  Header section: ${headerSection.length} bytes`)
+    }
+
+    const shieldBatterySection = replay.getRawSection('shieldBattery')
+    if (shieldBatterySection) {
+      console.log(`  ShieldBattery section: ${shieldBatterySection.length} bytes (raw)`)
+    } else {
+      console.log(`  No ShieldBattery section found`)
+    }
+  } catch (error) {
+    console.error('✗ ShieldBattery example failed:', error)
+  }
+}
+
 console.log('broodrep-wasm Usage Examples')
 console.log('============================')
 
@@ -217,6 +311,7 @@ basicExample()
 detailedExample()
 errorHandlingExample()
 customOptionsExample()
+shieldBatteryExample()
 
 console.log('\n✓ All examples completed!')
 console.log('\nTip: To use in your project:')

@@ -193,6 +193,7 @@
                 <th>Team</th>
                 <th>Type</th>
                 <th>Slot</th>
+                <th>Network ID</th>
               </tr>
             </thead>
             <tbody id="playersTableBody"></tbody>
@@ -211,6 +212,11 @@
             </thead>
             <tbody id="observersTableBody"></tbody>
           </table>
+        </div>
+
+        <div class="info-section" id="shieldBatterySection" style="display: none">
+          <h3>ShieldBattery Data</h3>
+          <div class="info-grid" id="shieldBatteryInfo"></div>
         </div>
       </div>
     </div>
@@ -327,6 +333,7 @@
                     <td>${player.team}</td>
                     <td>${player.playerType}</td>
                     <td>${player.slotId}</td>
+                    <td>${player.networkId}</td>
                 </tr>
             `,
           )
@@ -351,6 +358,82 @@
             .join('')
         } else {
           observersSection.style.display = 'none'
+        }
+
+        // ShieldBattery Data
+        const shieldBatterySection = document.getElementById('shieldBatterySection')
+        const shieldBatteryInfo = document.getElementById('shieldBatteryInfo')
+
+        const shieldBatteryData = replay.getShieldBatterySection()
+        if (shieldBatteryData) {
+          shieldBatterySection.style.display = 'block'
+
+          const raceNames = ['Zerg', 'Terran', 'Protoss']
+          const startingRaces = shieldBatteryData.startingRaces
+            .map(race => raceNames[race] || `Random`)
+            .join(', ')
+
+          const activeUserIds = shieldBatteryData.userIds.filter(id => id !== 0)
+          const mainPlayers = shieldBatteryData.teamGameMainPlayers
+
+          shieldBatteryInfo.innerHTML = `
+            <div class="info-item">
+              <div class="info-label">Game ID</div>
+              <div class="info-value" style="font-family: monospace; font-size: 0.9em;">${
+                shieldBatteryData.gameId
+              }</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">StarCraft Build</div>
+              <div class="info-value">${shieldBatteryData.starcraftExeBuild}</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">ShieldBattery Version</div>
+              <div class="info-value">${shieldBatteryData.shieldbatteryVersion}</div>
+            </div>
+            ${
+              shieldBatteryData.gameLogicVersion !== undefined
+                ? `
+            <div class="info-item">
+              <div class="info-label">Game Logic Version</div>
+              <div class="info-value">${shieldBatteryData.gameLogicVersion}</div>
+            </div>
+            `
+                : ''
+            }
+            ${
+              startingRaces
+                ? `
+            <div class="info-item">
+              <div class="info-label">Starting Races</div>
+              <div class="info-value">${startingRaces}</div>
+            </div>
+            `
+                : ''
+            }
+            ${
+              activeUserIds.length > 0
+                ? `
+            <div class="info-item">
+              <div class="info-label">User IDs</div>
+              <div class="info-value">[${activeUserIds.join(', ')}]</div>
+            </div>
+            `
+                : ''
+            }
+            ${
+              mainPlayers.length > 0
+                ? `
+            <div class="info-item">
+              <div class="info-label">Team Game Main Players</div>
+              <div class="info-value">[${mainPlayers.join(', ')}]</div>
+            </div>
+            `
+                : ''
+            }
+          `
+        } else {
+          shieldBatterySection.style.display = 'none'
         }
 
         replayInfo.style.display = 'block'
