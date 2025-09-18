@@ -13,8 +13,10 @@ use thiserror::Error;
 
 use crate::compression::SafeDecompressor;
 pub use crate::compression::{DecompressionConfig, DecompressionError};
+pub use crate::shieldbattery::{ShieldBatteryData, ShieldBatteryDataError};
 
 mod compression;
+mod shieldbattery;
 
 #[derive(Error, Debug)]
 pub enum BroodrepError {
@@ -26,6 +28,8 @@ pub enum BroodrepError {
     Decompression(#[from] DecompressionError),
     #[error("duplicate section found: {0:?}")]
     DuplicateSection(ReplaySection),
+    #[error("shieldbattery data error: {0}")]
+    ShieldBatteryData(#[from] shieldbattery::ShieldBatteryDataError),
 }
 
 /// A StarCraft replay, parsed from a [Read] implementation. Only the header will be parsed eagerly,
@@ -249,6 +253,17 @@ impl<R: Read + Seek> Replay<R> {
             )?;
             Ok(Some(bytes))
         }
+    }
+
+    /// Returns the parsed ShieldBattery data section, if present.
+    pub fn get_shieldbattery_section(
+        &mut self,
+    ) -> Result<Option<ShieldBatteryData>, BroodrepError> {
+        let data = match self.get_raw_section(ReplaySection::ShieldBattery)? {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        Ok(Some(shieldbattery::parse_shieldbattery_section(&data)?))
     }
 
     fn detect_format(reader: &mut R) -> Result<ReplayFormat, BroodrepError> {
@@ -1046,8 +1061,9 @@ mod tests {
         );
     }
 
+    // TODO(tec27): Would be nice to have a test with SB data v0 as well
     #[test]
-    fn shieldbattery_section_raw() {
+    fn shieldbattery_section_v1() {
         let mut cursor = Cursor::new(SB_DATA);
         let mut replay = Replay::new(&mut cursor).unwrap();
 
@@ -1056,13 +1072,34 @@ mod tests {
             Some(&33281)
         );
 
-        let data = replay.get_raw_section(ReplaySection::ShieldBattery);
+        let data = replay.get_shieldbattery_section();
         assert!(data.is_ok());
         let data = data.unwrap();
         assert!(data.is_some());
         let data = data.unwrap();
 
-        assert_eq!(data.len(), 0x58);
-        // TODO(tec27): Test parsing code when implemented
+        assert_eq!(data.starcraft_exe_build(), 13515);
+        assert_eq!(data.shieldbattery_version(), "10.1.0");
+        assert_eq!(data.team_game_main_players(), &[0, 0, 0, 0]);
+        assert_eq!(data.starting_races(), &[2, 1, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0]);
+        assert_eq!(data.game_id(), 56542772156747381282200559102402795521);
+        assert_eq!(data.user_ids(), &[101, 112, 1, 113, 0, 0, 0, 0]);
+        assert_eq!(data.game_logic_version(), Some(3));
+    }
+
+    #[test]
+    fn shieldbattery_section_missing() {
+        let mut cursor = Cursor::new(SCR_121);
+        let mut replay = Replay::new(&mut cursor).unwrap();
+
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::ShieldBattery),
+            None
+        );
+
+        let data = replay.get_shieldbattery_section();
+        assert!(data.is_ok());
+        let data = data.unwrap();
+        assert!(data.is_none());
     }
 }
