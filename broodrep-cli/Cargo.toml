@@ -1,11 +1,11 @@
 [package]
 name = "broodrep-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ShieldBattery/broodrep"
 
 [dependencies]
-broodrep = { version = "0.1.0", path = "../broodrep" }
+broodrep = { path = "../broodrep" }
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
