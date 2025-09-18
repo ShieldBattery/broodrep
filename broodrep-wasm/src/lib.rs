@@ -2,7 +2,13 @@ use js_sys::Uint8Array;
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use tsify::Tsify;
+use uuid::Uuid;
 use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen(typescript_custom_section)]
+const TS_APPEND_CONTENT: &'static str = r#"
+export type Uuid = string;
+"#;
 
 /// Decompression configuration options. These settings help prevent zip bomb attacks and excessive
 /// resource usage.
@@ -305,6 +311,33 @@ impl From<ReplaySection> for broodrep::ReplaySection {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Tsify, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct ShieldBatteryData {
+    pub starcraft_exe_build: u32,
+    pub shieldbattery_version: String,
+    pub team_game_main_players: [u8; 4],
+    pub starting_races: [u8; 12],
+    pub game_id: Uuid,
+    pub user_ids: [u32; 8],
+    pub game_logic_version: Option<u16>,
+}
+
+impl From<broodrep::ShieldBatteryData> for ShieldBatteryData {
+    fn from(data: broodrep::ShieldBatteryData) -> Self {
+        ShieldBatteryData {
+            starcraft_exe_build: data.starcraft_exe_build(),
+            shieldbattery_version: data.shieldbattery_version().to_string(),
+            team_game_main_players: data.team_game_main_players(),
+            starting_races: data.starting_races(),
+            game_id: Uuid::from_u128(data.game_id()),
+            user_ids: data.user_ids(),
+            game_logic_version: data.game_logic_version(),
+        }
+    }
+}
+
 /// A parsed StarCraft replay. Only the header will be parsed eagerly, other sections may be
 /// processed on demand.
 ///
@@ -369,6 +402,16 @@ impl Replay {
         self.replay
             .get_raw_section(section_id.to_le_bytes().into())
             .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Returns the parsed ShieldBattery section, or `undefined` if not present in the replay.
+    #[wasm_bindgen(js_name = getShieldBatterySection)]
+    pub fn get_shieldbattery_section(&mut self) -> Result<Option<ShieldBatteryData>, JsValue> {
+        Ok(self
+            .replay
+            .get_shieldbattery_section()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .map(Into::into))
     }
 }
 

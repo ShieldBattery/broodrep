@@ -1080,10 +1080,10 @@ mod tests {
 
         assert_eq!(data.starcraft_exe_build(), 13515);
         assert_eq!(data.shieldbattery_version(), "10.1.0");
-        assert_eq!(data.team_game_main_players(), &[0, 0, 0, 0]);
-        assert_eq!(data.starting_races(), &[2, 1, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0]);
+        assert_eq!(data.team_game_main_players(), [0, 0, 0, 0]);
+        assert_eq!(data.starting_races(), [2, 1, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0]);
         assert_eq!(data.game_id(), 56542772156747381282200559102402795521);
-        assert_eq!(data.user_ids(), &[101, 112, 1, 113, 0, 0, 0, 0]);
+        assert_eq!(data.user_ids(), [101, 112, 1, 113, 0, 0, 0, 0]);
         assert_eq!(data.game_logic_version(), Some(3));
     }
 

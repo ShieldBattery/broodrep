@@ -53,18 +53,18 @@ impl ShieldBatteryData {
     }
 
     /// Which players were the "main" players in a team game (e.g. Team Melee).
-    pub fn team_game_main_players(&self) -> &[u8; 4] {
+    pub fn team_game_main_players(&self) -> [u8; 4] {
         match self {
-            ShieldBatteryData::Version0(data) => &data.team_game_main_players,
-            ShieldBatteryData::Version1(data, _) => &data.team_game_main_players,
+            ShieldBatteryData::Version0(data) => data.team_game_main_players,
+            ShieldBatteryData::Version1(data, _) => data.team_game_main_players,
         }
     }
 
     /// The starting race for each player in the game.
-    pub fn starting_races(&self) -> &[u8; 12] {
+    pub fn starting_races(&self) -> [u8; 12] {
         match self {
-            ShieldBatteryData::Version0(data) => &data.starting_races,
-            ShieldBatteryData::Version1(data, _) => &data.starting_races,
+            ShieldBatteryData::Version0(data) => data.starting_races,
+            ShieldBatteryData::Version1(data, _) => data.starting_races,
         }
     }
 
@@ -78,10 +78,10 @@ impl ShieldBatteryData {
 
     /// The ShieldBattery user IDs of the players ingame, in the same order as the players in the
     /// replay header.
-    pub fn user_ids(&self) -> &[u32; 8] {
+    pub fn user_ids(&self) -> [u32; 8] {
         match self {
-            ShieldBatteryData::Version0(data) => &data.user_ids,
-            ShieldBatteryData::Version1(data, _) => &data.user_ids,
+            ShieldBatteryData::Version0(data) => data.user_ids,
+            ShieldBatteryData::Version1(data, _) => data.user_ids,
         }
     }
 
