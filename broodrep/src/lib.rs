@@ -856,6 +856,7 @@ mod tests {
     const LEGACY_EMPTY: &[u8] = include_bytes!("../testdata/empty.rep");
     const SCR_OLD: &[u8] = include_bytes!("../testdata/scr_old.rep");
     const SCR_121: &[u8] = include_bytes!("../testdata/scr_replay.rep");
+    const SB_DATA: &[u8] = include_bytes!("../testdata/sb_data.rep");
 
     #[test]
     fn test_replay_format_invalid() {
@@ -1043,5 +1044,25 @@ mod tests {
             replay.section_offsets.get(&ReplaySection::ShieldBattery),
             None
         );
+    }
+
+    #[test]
+    fn shieldbattery_section_raw() {
+        let mut cursor = Cursor::new(SB_DATA);
+        let mut replay = Replay::new(&mut cursor).unwrap();
+
+        assert_eq!(
+            replay.section_offsets.get(&ReplaySection::ShieldBattery),
+            Some(&33281)
+        );
+
+        let data = replay.get_raw_section(ReplaySection::ShieldBattery);
+        assert!(data.is_ok());
+        let data = data.unwrap();
+        assert!(data.is_some());
+        let data = data.unwrap();
+
+        assert_eq!(data.len(), 0x58);
+        // TODO(tec27): Test parsing code when implemented
     }
 }
