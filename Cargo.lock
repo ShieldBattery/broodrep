@@ -87,7 +87,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "broodrep"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "byteorder",
  "chrono",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "broodrep-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "broodrep",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "broodrep-wasm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "broodrep",
  "chrono",
