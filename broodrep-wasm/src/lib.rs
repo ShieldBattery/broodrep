@@ -176,12 +176,15 @@ impl From<broodrep::PlayerType> for PlayerType {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Tsify, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 #[tsify(into_wasm_abi)]
 pub enum Race {
+    #[serde(rename = "z")]
     Zerg,
+    #[serde(rename = "t")]
     Terran,
+    #[serde(rename = "p")]
     Protoss,
+    #[serde(rename = "r")]
     Random,
 }
 
@@ -318,7 +321,7 @@ pub struct ShieldBatteryData {
     pub starcraft_exe_build: u32,
     pub shieldbattery_version: String,
     pub team_game_main_players: [u8; 4],
-    pub starting_races: [u8; 12],
+    pub starting_races: [Race; 12],
     pub game_id: Uuid,
     pub user_ids: [u32; 8],
     pub game_logic_version: Option<u16>,
@@ -327,13 +330,13 @@ pub struct ShieldBatteryData {
 impl From<broodrep::ShieldBatteryData> for ShieldBatteryData {
     fn from(data: broodrep::ShieldBatteryData) -> Self {
         ShieldBatteryData {
-            starcraft_exe_build: data.starcraft_exe_build(),
-            shieldbattery_version: data.shieldbattery_version().to_string(),
-            team_game_main_players: data.team_game_main_players(),
-            starting_races: data.starting_races(),
-            game_id: Uuid::from_u128(data.game_id()),
-            user_ids: data.user_ids(),
-            game_logic_version: data.game_logic_version(),
+            starcraft_exe_build: data.starcraft_exe_build,
+            shieldbattery_version: data.shieldbattery_version.to_string(),
+            team_game_main_players: data.team_game_main_players,
+            starting_races: data.starting_races.map(Into::into),
+            game_id: Uuid::from_u128(data.game_id),
+            user_ids: data.user_ids,
+            game_logic_version: data.game_logic_version,
         }
     }
 }

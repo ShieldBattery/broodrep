@@ -138,16 +138,16 @@
         color: #666;
       }
 
-      .race-terran {
+      .race-t {
         color: #ff6b6b;
       }
-      .race-protoss {
+      .race-p {
         color: #4ecdc4;
       }
-      .race-zerg {
+      .race-z {
         color: #9b59b6;
       }
-      .race-random {
+      .race-r {
         color: #95a5a6;
       }
 
@@ -263,7 +263,7 @@
       }
 
       function getRaceClass(race) {
-        return `race-${race.toLowerCase()}`
+        return `race-${race}`
       }
 
       function displayReplayInfo(replay) {
@@ -368,10 +368,7 @@
         if (shieldBatteryData) {
           shieldBatterySection.style.display = 'block'
 
-          const raceNames = ['Zerg', 'Terran', 'Protoss']
-          const startingRaces = shieldBatteryData.startingRaces
-            .map(race => raceNames[race] || `Random`)
-            .join(', ')
+          const startingRaces = shieldBatteryData.startingRaces.join(', ')
 
           const activeUserIds = shieldBatteryData.userIds.filter(id => id !== 0)
           const mainPlayers = shieldBatteryData.teamGameMainPlayers

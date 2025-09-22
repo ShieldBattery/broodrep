@@ -6,6 +6,8 @@ use std::{
 use byteorder::{LittleEndian as LE, ReadBytesExt as _};
 use thiserror::Error;
 
+use crate::Race;
+
 #[derive(Error, Debug)]
 pub enum ShieldBatteryDataError {
     #[error(transparent)]
@@ -15,83 +17,23 @@ pub enum ShieldBatteryDataError {
 }
 
 #[derive(Debug, Clone)]
-pub enum ShieldBatteryData {
-    Version0(ShieldBatteryDataV0),
-    Version1(ShieldBatteryDataV0, ShieldBatteryDataV1),
-}
-
-#[derive(Debug, Clone)]
-pub struct ShieldBatteryDataV0 {
-    pub starcraft_exe_build: u32,
-    pub shieldbattery_version: String,
-    pub team_game_main_players: [u8; 4],
-    pub starting_races: [u8; 12],
-    pub game_id: u128,
-    pub user_ids: [u32; 8],
-}
-
-#[derive(Debug, Clone)]
-pub struct ShieldBatteryDataV1 {
-    game_logic_version: u16,
-}
-
-impl ShieldBatteryData {
+pub struct ShieldBatteryData {
     /// The build number of the StarCraft executable used to play the game.
-    pub fn starcraft_exe_build(&self) -> u32 {
-        match self {
-            ShieldBatteryData::Version0(data) => data.starcraft_exe_build,
-            ShieldBatteryData::Version1(data, _) => data.starcraft_exe_build,
-        }
-    }
-
+    pub starcraft_exe_build: u32,
     /// The version string of the ShieldBattery client used to play the game.
-    pub fn shieldbattery_version(&self) -> &str {
-        match self {
-            ShieldBatteryData::Version0(data) => &data.shieldbattery_version,
-            ShieldBatteryData::Version1(data, _) => &data.shieldbattery_version,
-        }
-    }
-
+    pub shieldbattery_version: String,
     /// Which players were the "main" players in a team game (e.g. Team Melee).
-    pub fn team_game_main_players(&self) -> [u8; 4] {
-        match self {
-            ShieldBatteryData::Version0(data) => data.team_game_main_players,
-            ShieldBatteryData::Version1(data, _) => data.team_game_main_players,
-        }
-    }
-
+    pub team_game_main_players: [u8; 4],
     /// The starting race for each player in the game.
-    pub fn starting_races(&self) -> [u8; 12] {
-        match self {
-            ShieldBatteryData::Version0(data) => data.starting_races,
-            ShieldBatteryData::Version1(data, _) => data.starting_races,
-        }
-    }
-
+    pub starting_races: [Race; 12],
     /// The game's ID on ShieldBattery (a UUID as a u128).
-    pub fn game_id(&self) -> u128 {
-        match self {
-            ShieldBatteryData::Version0(data) => data.game_id,
-            ShieldBatteryData::Version1(data, _) => data.game_id,
-        }
-    }
-
+    pub game_id: u128,
     /// The ShieldBattery user IDs of the players ingame, in the same order as the players in the
     /// replay header.
-    pub fn user_ids(&self) -> [u32; 8] {
-        match self {
-            ShieldBatteryData::Version0(data) => data.user_ids,
-            ShieldBatteryData::Version1(data, _) => data.user_ids,
-        }
-    }
-
-    /// The version of ShieldBattery game logic modifications used to play the game.
-    pub fn game_logic_version(&self) -> Option<u16> {
-        match self {
-            ShieldBatteryData::Version0(_) => None,
-            ShieldBatteryData::Version1(_, data) => Some(data.game_logic_version),
-        }
-    }
+    pub user_ids: [u32; 8],
+    /// The version of ShieldBattery game logic modifications used to play the game. May not be
+    /// present on older replays.
+    pub game_logic_version: Option<u16>,
 }
 
 pub fn parse_shieldbattery_section(
@@ -109,25 +51,23 @@ pub fn parse_shieldbattery_section(
     data.read_exact(&mut team_game_main_players)?;
     let mut starting_races = [0u8; 12];
     data.read_exact(&mut starting_races)?;
+    let starting_races = starting_races.map(Into::into);
     let game_id = data.read_u128::<LE>()?;
     let mut user_ids = [0u32; 8];
     data.read_u32_into::<LE>(&mut user_ids)?;
 
-    let v0 = ShieldBatteryDataV0 {
+    let mut parsed = ShieldBatteryData {
         starcraft_exe_build,
         shieldbattery_version,
         team_game_main_players,
         starting_races,
         game_id,
         user_ids,
+        game_logic_version: None,
     };
-    if version == 0 {
-        Ok(ShieldBatteryData::Version0(v0))
-    } else
-    /* if version >= 1 */
-    {
-        let game_logic_version = data.read_u16::<LE>()?;
-        let v1 = ShieldBatteryDataV1 { game_logic_version };
-        Ok(ShieldBatteryData::Version1(v0, v1))
+    if version >= 1 {
+        parsed.game_logic_version = Some(data.read_u16::<LE>()?);
     }
+
+    Ok(parsed)
 }

@@ -412,7 +412,7 @@ impl<R: Read + Seek> Replay<R> {
                 let network_id = cursor.read_u8()?;
                 cursor.seek(SeekFrom::Current(3))?; // unknown
                 let player_type: PlayerType = cursor.read_u8()?.try_into()?;
-                let race: Race = cursor.read_u8()?.try_into()?;
+                let race: Race = cursor.read_u8()?.into();
                 let team = cursor.read_u8()?;
                 let mut name = vec![0u8; 26];
                 cursor.read_exact(&mut name[..25])?;
@@ -836,15 +836,13 @@ pub enum Race {
     Random = 6,
 }
 
-impl TryFrom<u8> for Race {
-    type Error = BroodrepError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
+impl From<u8> for Race {
+    fn from(value: u8) -> Self {
         match value {
-            0 => Ok(Race::Zerg),
-            1 => Ok(Race::Terran),
-            2 => Ok(Race::Protoss),
-            _ => Ok(Race::Random),
+            0 => Race::Zerg,
+            1 => Race::Terran,
+            2 => Race::Protoss,
+            _ => Race::Random,
         }
     }
 }
@@ -1078,13 +1076,29 @@ mod tests {
         assert!(data.is_some());
         let data = data.unwrap();
 
-        assert_eq!(data.starcraft_exe_build(), 13515);
-        assert_eq!(data.shieldbattery_version(), "10.1.0");
-        assert_eq!(data.team_game_main_players(), [0, 0, 0, 0]);
-        assert_eq!(data.starting_races(), [2, 1, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0]);
-        assert_eq!(data.game_id(), 56542772156747381282200559102402795521);
-        assert_eq!(data.user_ids(), [101, 112, 1, 113, 0, 0, 0, 0]);
-        assert_eq!(data.game_logic_version(), Some(3));
+        assert_eq!(data.starcraft_exe_build, 13515);
+        assert_eq!(data.shieldbattery_version, "10.1.0");
+        assert_eq!(data.team_game_main_players, [0, 0, 0, 0]);
+        assert_eq!(
+            data.starting_races,
+            [
+                Race::Protoss,
+                Race::Terran,
+                Race::Zerg,
+                Race::Terran,
+                Race::Terran,
+                Race::Zerg,
+                Race::Terran,
+                Race::Terran,
+                Race::Zerg,
+                Race::Zerg,
+                Race::Zerg,
+                Race::Zerg
+            ]
+        );
+        assert_eq!(data.game_id, 56542772156747381282200559102402795521);
+        assert_eq!(data.user_ids, [101, 112, 1, 113, 0, 0, 0, 0]);
+        assert_eq!(data.game_logic_version, Some(3));
     }
 
     #[test]
