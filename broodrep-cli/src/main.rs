@@ -15,9 +15,10 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     let file = File::open(&args.replay_file)?;
-    let replay = broodrep::Replay::new(file)?;
+    let mut replay = broodrep::Replay::new(file)?;
 
     display_replay_info(&replay);
+    display_commands(&mut replay);
 
     Ok(())
 }
@@ -79,6 +80,58 @@ fn display_replay_info(replay: &broodrep::Replay<std::fs::File>) {
             println!("  [Obs] {}", observer.name);
         }
         println!();
+    }
+}
+
+fn display_commands(replay: &mut broodrep::Replay<std::fs::File>) {
+    match replay.get_commands() {
+        Ok(Some(commands)) => {
+            println!("Commands:");
+            println!("  Total:         {}", commands.len());
+
+            // Count commands by type
+            let mut type_counts = std::collections::HashMap::<&str, usize>::new();
+            for cmd in &commands {
+                let name = match &cmd.command {
+                    broodrep::Command::Select { .. } | broodrep::Command::Select121 { .. } => {
+                        "Select"
+                    }
+                    broodrep::Command::SelectAdd { .. }
+                    | broodrep::Command::SelectAdd121 { .. } => "Select Add",
+                    broodrep::Command::SelectRemove { .. }
+                    | broodrep::Command::SelectRemove121 { .. } => "Select Remove",
+                    broodrep::Command::RightClick { .. }
+                    | broodrep::Command::RightClick121 { .. } => "Right Click",
+                    broodrep::Command::TargetedOrder { .. }
+                    | broodrep::Command::TargetedOrder121 { .. } => "Targeted Order",
+                    broodrep::Command::Build { .. } => "Build",
+                    broodrep::Command::Train { .. } => "Train",
+                    broodrep::Command::Hotkey { .. } => "Hotkey",
+                    broodrep::Command::Stop { .. } => "Stop",
+                    broodrep::Command::HoldPosition { .. } => "Hold Position",
+                    broodrep::Command::Chat { .. } => "Chat",
+                    broodrep::Command::KeepAlive => "Keep Alive",
+                    broodrep::Command::LeaveGame { .. } => "Leave Game",
+                    _ => "Other",
+                };
+                *type_counts.entry(name).or_default() += 1;
+            }
+
+            let mut sorted: Vec<_> = type_counts.into_iter().collect();
+            sorted.sort_by(|a, b| b.1.cmp(&a.1));
+            for (name, count) in &sorted {
+                println!("    {name}: {count}");
+            }
+            println!();
+        }
+        Ok(None) => {
+            println!("Commands:        (section not present)");
+            println!();
+        }
+        Err(e) => {
+            println!("Commands:        (error: {e})");
+            println!();
+        }
     }
 }
 

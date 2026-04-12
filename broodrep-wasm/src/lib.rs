@@ -341,6 +341,351 @@ impl From<broodrep::ShieldBatteryData> for ShieldBatteryData {
     }
 }
 
+/// A replay command with its frame number, player, and command data.
+#[derive(Clone, Debug, Tsify, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct ReplayCommand {
+    pub frame: u32,
+    pub player_id: u8,
+    pub command: CommandData,
+}
+
+/// The data for a specific command type.
+#[derive(Clone, Debug, Tsify, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub enum CommandData {
+    #[serde(rename_all = "camelCase")]
+    Select {
+        unit_tags: Vec<u32>,
+    },
+    #[serde(rename_all = "camelCase")]
+    SelectAdd {
+        unit_tags: Vec<u32>,
+    },
+    #[serde(rename_all = "camelCase")]
+    SelectRemove {
+        unit_tags: Vec<u32>,
+    },
+    #[serde(rename_all = "camelCase")]
+    RightClick {
+        x: u16,
+        y: u16,
+        target_unit_tag: u32,
+        target_unit_type: u16,
+        queued: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    TargetedOrder {
+        x: u16,
+        y: u16,
+        target_unit_tag: u32,
+        target_unit_type: u16,
+        order: u8,
+        queued: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    Build {
+        order: u8,
+        x: u16,
+        y: u16,
+        unit_type: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    Train {
+        unit_type: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    UnitMorph {
+        unit_type: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    BuildingMorph {
+        unit_type: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    CancelTrain {
+        unit_tag: u16,
+    },
+    Stop {
+        queued: bool,
+    },
+    HoldPosition {
+        queued: bool,
+    },
+    Burrow {
+        queued: bool,
+    },
+    Unburrow {
+        queued: bool,
+    },
+    Cloak {
+        queued: bool,
+    },
+    Decloak {
+        queued: bool,
+    },
+    Siege {
+        queued: bool,
+    },
+    Unsiege {
+        queued: bool,
+    },
+    ReturnCargo {
+        queued: bool,
+    },
+    UnloadAll {
+        queued: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    Unload {
+        unit_tag: u32,
+    },
+    #[serde(rename_all = "camelCase")]
+    Hotkey {
+        hotkey_type: u8,
+        group: u8,
+    },
+    #[serde(rename_all = "camelCase")]
+    Tech {
+        tech_id: u8,
+    },
+    #[serde(rename_all = "camelCase")]
+    Upgrade {
+        upgrade_id: u8,
+    },
+    #[serde(rename_all = "camelCase")]
+    LiftOff {
+        x: u16,
+        y: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    MinimapPing {
+        x: u16,
+        y: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    Chat {
+        sender_slot: u8,
+        message: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    LeaveGame {
+        reason: u8,
+    },
+    #[serde(rename_all = "camelCase")]
+    GameSpeed {
+        speed: u8,
+    },
+    #[serde(rename_all = "camelCase")]
+    Cheat {
+        flags: u32,
+    },
+    #[serde(rename_all = "camelCase")]
+    Vision {
+        flags: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    Alliance {
+        flags: u32,
+    },
+    #[serde(rename_all = "camelCase")]
+    Latency {
+        latency: u8,
+    },
+    TrainFighter,
+    MergeArchon,
+    MergeDarkArchon,
+    CancelBuild,
+    CancelMorph,
+    CancelAddon,
+    CancelTech,
+    CancelUpgrade,
+    CancelNuke,
+    Stim,
+    CarrierStop,
+    ReaverStop,
+    OrderNothing,
+    Pause,
+    Resume,
+    KeepAlive,
+    /// A command with a known type ID but stored as raw data.
+    #[serde(rename_all = "camelCase")]
+    Known {
+        type_id: u8,
+        data: Vec<u8>,
+    },
+    /// An unrecognized command type.
+    #[serde(rename_all = "camelCase")]
+    Unknown {
+        type_id: u8,
+        data: Vec<u8>,
+    },
+}
+
+impl From<broodrep::ReplayCommand> for ReplayCommand {
+    fn from(cmd: broodrep::ReplayCommand) -> Self {
+        ReplayCommand {
+            frame: cmd.frame,
+            player_id: cmd.player_id,
+            command: cmd.command.into(),
+        }
+    }
+}
+
+impl From<broodrep::Command> for CommandData {
+    fn from(cmd: broodrep::Command) -> Self {
+        match cmd {
+            // Merge regular and 121 select variants (widening u16 to u32)
+            broodrep::Command::Select { unit_tags } => CommandData::Select {
+                unit_tags: unit_tags.into_iter().map(u32::from).collect(),
+            },
+            broodrep::Command::Select121 { unit_tags } => CommandData::Select { unit_tags },
+            broodrep::Command::SelectAdd { unit_tags } => CommandData::SelectAdd {
+                unit_tags: unit_tags.into_iter().map(u32::from).collect(),
+            },
+            broodrep::Command::SelectAdd121 { unit_tags } => CommandData::SelectAdd { unit_tags },
+            broodrep::Command::SelectRemove { unit_tags } => CommandData::SelectRemove {
+                unit_tags: unit_tags.into_iter().map(u32::from).collect(),
+            },
+            broodrep::Command::SelectRemove121 { unit_tags } => {
+                CommandData::SelectRemove { unit_tags }
+            }
+            // Merge regular and 121 order variants
+            broodrep::Command::RightClick {
+                x,
+                y,
+                target_unit_tag,
+                target_unit_type,
+                queued,
+            } => CommandData::RightClick {
+                x,
+                y,
+                target_unit_tag: target_unit_tag as u32,
+                target_unit_type,
+                queued,
+            },
+            broodrep::Command::RightClick121 {
+                x,
+                y,
+                target_unit_tag,
+                target_unit_type,
+                queued,
+                ..
+            } => CommandData::RightClick {
+                x,
+                y,
+                target_unit_tag: target_unit_tag as u32,
+                target_unit_type,
+                queued,
+            },
+            broodrep::Command::TargetedOrder {
+                x,
+                y,
+                target_unit_tag,
+                target_unit_type,
+                order,
+                queued,
+            } => CommandData::TargetedOrder {
+                x,
+                y,
+                target_unit_tag: target_unit_tag as u32,
+                target_unit_type,
+                order,
+                queued,
+            },
+            broodrep::Command::TargetedOrder121 {
+                x,
+                y,
+                target_unit_tag,
+                target_unit_type,
+                order,
+                queued,
+                ..
+            } => CommandData::TargetedOrder {
+                x,
+                y,
+                target_unit_tag: target_unit_tag as u32,
+                target_unit_type,
+                order,
+                queued,
+            },
+            broodrep::Command::Build {
+                order,
+                x,
+                y,
+                unit_type,
+            } => CommandData::Build {
+                order,
+                x,
+                y,
+                unit_type,
+            },
+            broodrep::Command::Train { unit_type } => CommandData::Train { unit_type },
+            broodrep::Command::UnitMorph { unit_type } => CommandData::UnitMorph { unit_type },
+            broodrep::Command::BuildingMorph { unit_type } => {
+                CommandData::BuildingMorph { unit_type }
+            }
+            broodrep::Command::CancelTrain { unit_tag } => CommandData::CancelTrain { unit_tag },
+            broodrep::Command::Stop { queued } => CommandData::Stop { queued },
+            broodrep::Command::HoldPosition { queued } => CommandData::HoldPosition { queued },
+            broodrep::Command::Burrow { queued } => CommandData::Burrow { queued },
+            broodrep::Command::Unburrow { queued } => CommandData::Unburrow { queued },
+            broodrep::Command::Cloak { queued } => CommandData::Cloak { queued },
+            broodrep::Command::Decloak { queued } => CommandData::Decloak { queued },
+            broodrep::Command::Siege { queued } => CommandData::Siege { queued },
+            broodrep::Command::Unsiege { queued } => CommandData::Unsiege { queued },
+            broodrep::Command::ReturnCargo { queued } => CommandData::ReturnCargo { queued },
+            broodrep::Command::UnloadAll { queued } => CommandData::UnloadAll { queued },
+            broodrep::Command::Unload { unit_tag } => CommandData::Unload {
+                unit_tag: unit_tag as u32,
+            },
+            broodrep::Command::Unload121 { unit_tag, .. } => CommandData::Unload {
+                unit_tag: unit_tag as u32,
+            },
+            broodrep::Command::Hotkey { hotkey_type, group } => {
+                CommandData::Hotkey { hotkey_type, group }
+            }
+            broodrep::Command::Tech { tech_id } => CommandData::Tech { tech_id },
+            broodrep::Command::Upgrade { upgrade_id } => CommandData::Upgrade { upgrade_id },
+            broodrep::Command::LiftOff { x, y } => CommandData::LiftOff { x, y },
+            broodrep::Command::MinimapPing { x, y } => CommandData::MinimapPing { x, y },
+            broodrep::Command::Chat {
+                sender_slot,
+                message,
+            } => CommandData::Chat {
+                sender_slot,
+                message,
+            },
+            broodrep::Command::LeaveGame { reason } => CommandData::LeaveGame { reason },
+            broodrep::Command::GameSpeed { speed } => CommandData::GameSpeed { speed },
+            broodrep::Command::Cheat { flags } => CommandData::Cheat { flags },
+            broodrep::Command::Vision { flags } => CommandData::Vision { flags },
+            broodrep::Command::Alliance { flags } => CommandData::Alliance { flags },
+            broodrep::Command::Latency { latency } => CommandData::Latency { latency },
+            broodrep::Command::TrainFighter => CommandData::TrainFighter,
+            broodrep::Command::MergeArchon => CommandData::MergeArchon,
+            broodrep::Command::MergeDarkArchon => CommandData::MergeDarkArchon,
+            broodrep::Command::CancelBuild => CommandData::CancelBuild,
+            broodrep::Command::CancelMorph => CommandData::CancelMorph,
+            broodrep::Command::CancelAddon => CommandData::CancelAddon,
+            broodrep::Command::CancelTech => CommandData::CancelTech,
+            broodrep::Command::CancelUpgrade => CommandData::CancelUpgrade,
+            broodrep::Command::CancelNuke => CommandData::CancelNuke,
+            broodrep::Command::Stim => CommandData::Stim,
+            broodrep::Command::CarrierStop => CommandData::CarrierStop,
+            broodrep::Command::ReaverStop => CommandData::ReaverStop,
+            broodrep::Command::OrderNothing => CommandData::OrderNothing,
+            broodrep::Command::Pause => CommandData::Pause,
+            broodrep::Command::Resume => CommandData::Resume,
+            broodrep::Command::KeepAlive => CommandData::KeepAlive,
+            broodrep::Command::Known { type_id, data } => CommandData::Known { type_id, data },
+            broodrep::Command::Unknown { type_id, data } => CommandData::Unknown { type_id, data },
+        }
+    }
+}
+
 /// A parsed StarCraft replay. Only the header will be parsed eagerly, other sections may be
 /// processed on demand.
 ///
@@ -415,6 +760,24 @@ impl Replay {
             .get_shieldbattery_section()
             .map_err(|e| JsValue::from_str(&e.to_string()))?
             .map(Into::into))
+    }
+
+    /// Returns the parsed commands from the replay, or `undefined` if the commands section is not
+    /// present.
+    #[wasm_bindgen(js_name = getCommands)]
+    pub fn get_commands(&mut self) -> Result<JsValue, JsValue> {
+        let commands = self
+            .replay
+            .get_commands()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        match commands {
+            Some(cmds) => {
+                let wasm_cmds: Vec<ReplayCommand> = cmds.into_iter().map(Into::into).collect();
+                serde_wasm_bindgen::to_value(&wasm_cmds)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))
+            }
+            None => Ok(JsValue::UNDEFINED),
+        }
     }
 }
 

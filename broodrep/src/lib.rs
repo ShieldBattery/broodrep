@@ -11,10 +11,12 @@ use explode::ExplodeReader;
 use flate2::bufread::ZlibDecoder;
 use thiserror::Error;
 
+pub use crate::commands::{Command, CommandParseError, ReplayCommand};
 use crate::compression::SafeDecompressor;
 pub use crate::compression::{DecompressionConfig, DecompressionError};
 pub use crate::shieldbattery::{ShieldBatteryData, ShieldBatteryDataError};
 
+pub mod commands;
 mod compression;
 mod shieldbattery;
 
@@ -30,6 +32,8 @@ pub enum BroodrepError {
     DuplicateSection(ReplaySection),
     #[error("shieldbattery data error: {0}")]
     ShieldBatteryData(#[from] shieldbattery::ShieldBatteryDataError),
+    #[error("command parse error: {0}")]
+    CommandParse(#[from] commands::CommandParseError),
 }
 
 /// A StarCraft replay, parsed from a [Read] implementation. Only the header will be parsed eagerly,
@@ -264,6 +268,16 @@ impl<R: Read + Seek> Replay<R> {
             None => return Ok(None),
         };
         Ok(Some(shieldbattery::parse_shieldbattery_section(&data)?))
+    }
+
+    /// Returns the parsed commands from the replay, or [None] if the commands section is not
+    /// present.
+    pub fn get_commands(&mut self) -> Result<Option<Vec<ReplayCommand>>, BroodrepError> {
+        let data = match self.get_raw_section(ReplaySection::Commands)? {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        Ok(Some(commands::parse_commands(&data)?))
     }
 
     fn detect_format(reader: &mut R) -> Result<ReplayFormat, BroodrepError> {
@@ -1115,5 +1129,283 @@ mod tests {
         assert!(data.is_ok());
         let data = data.unwrap();
         assert!(data.is_none());
+    }
+
+    #[test]
+    fn commands_legacy() {
+        let cursor = Cursor::new(LEGACY);
+        let mut replay = Replay::new(cursor).unwrap();
+
+        let commands = replay.get_commands().unwrap().unwrap();
+        assert!(!commands.is_empty());
+
+        // First command: frame 34, player 0, Select 7 units
+        assert_eq!(commands[0].frame, 34);
+        assert_eq!(commands[0].player_id, 0);
+        assert_eq!(
+            commands[0].command,
+            Command::Select {
+                unit_tags: vec![0x0e48, 0x0e49, 0x0e4a, 0x0e38, 0x0e4d, 0x0e4e, 0x0e4b]
+            }
+        );
+
+        // Second command: frame 141, player 1, Chat "rip rap nib nab"
+        assert_eq!(commands[1].frame, 141);
+        assert_eq!(commands[1].player_id, 1);
+        match &commands[1].command {
+            Command::Chat {
+                sender_slot,
+                message,
+            } => {
+                assert_eq!(*sender_slot, 3);
+                assert_eq!(message, "rip rap nib nab");
+            }
+            other => panic!("expected Chat, got {:?}", other),
+        }
+
+        // Third command: frame 174, player 0, TargetedOrder
+        assert_eq!(commands[2].frame, 174);
+        assert_eq!(commands[2].player_id, 0);
+        assert_eq!(
+            commands[2].command,
+            Command::TargetedOrder {
+                x: 0x0783,
+                y: 0x0ed2,
+                target_unit_tag: 0x0e4f,
+                target_unit_type: 0x00e4,
+                order: 0x08,
+                queued: false,
+            }
+        );
+
+        // Fourth command: frame 192, player 1, Select 4 units
+        assert_eq!(commands[3].frame, 192);
+        assert_eq!(commands[3].player_id, 1);
+        assert_eq!(
+            commands[3].command,
+            Command::Select {
+                unit_tags: vec![0x0e39, 0x0e3a, 0x0e3b, 0x0e3c]
+            }
+        );
+
+        // Check that there's a Train command for player 1 (unit type 7)
+        let train_cmds: Vec<_> = commands
+            .iter()
+            .filter(|c| matches!(c.command, Command::Train { .. }))
+            .collect();
+        assert_eq!(train_cmds.len(), 2);
+        assert_eq!(train_cmds[0].command, Command::Train { unit_type: 0x0007 });
+        assert_eq!(train_cmds[0].player_id, 1);
+
+        // Check that there's a UnitMorph command
+        let morph_cmds: Vec<_> = commands
+            .iter()
+            .filter(|c| matches!(c.command, Command::UnitMorph { .. }))
+            .collect();
+        assert_eq!(morph_cmds.len(), 1);
+        assert_eq!(
+            morph_cmds[0].command,
+            Command::UnitMorph { unit_type: 0x0029 }
+        );
+
+        // All frames should be monotonically non-decreasing
+        for w in commands.windows(2) {
+            assert!(
+                w[0].frame <= w[1].frame,
+                "frames not monotonic: {} > {} at commands {:?} and {:?}",
+                w[0].frame,
+                w[1].frame,
+                w[0],
+                w[1]
+            );
+        }
+
+        // All frames should be within the replay's total frames
+        let max_frame = commands.iter().map(|c| c.frame).max().unwrap();
+        assert!(
+            max_frame <= replay.frames(),
+            "max frame {max_frame} exceeds replay frames {}",
+            replay.frames()
+        );
+    }
+
+    #[test]
+    fn commands_scr_121() {
+        let cursor = Cursor::new(SCR_121);
+        let mut replay = Replay::new(cursor).unwrap();
+
+        let commands = replay.get_commands().unwrap().unwrap();
+        assert!(!commands.is_empty());
+
+        // First command: frame 170, player 0, Select121 with 1 unit
+        assert_eq!(commands[0].frame, 170);
+        assert_eq!(commands[0].player_id, 0);
+        assert_eq!(
+            commands[0].command,
+            Command::Select121 {
+                unit_tags: vec![0x00002cfe]
+            }
+        );
+
+        // Second command: frame 304, player 0, Select121
+        assert_eq!(commands[1].frame, 304);
+        assert_eq!(commands[1].player_id, 0);
+        assert_eq!(
+            commands[1].command,
+            Command::Select121 {
+                unit_tags: vec![0x00002cd7]
+            }
+        );
+
+        // Third command: frame 461, player 0, Cheat
+        assert_eq!(commands[2].frame, 461);
+        assert_eq!(commands[2].player_id, 0);
+        assert_eq!(commands[2].command, Command::Cheat { flags: 0x00000001 });
+
+        assert_eq!(commands.len(), 3);
+    }
+
+    #[test]
+    fn commands_empty_replay() {
+        let cursor = Cursor::new(LEGACY_EMPTY);
+        let mut replay = Replay::new(cursor).unwrap();
+
+        // Empty replay may fail to decompress its commands section or return empty commands.
+        // Either outcome is acceptable — we just shouldn't panic.
+        match replay.get_commands() {
+            Ok(Some(commands)) => {
+                // If commands parse, they should all have valid structure
+                for cmd in &commands {
+                    let _ = cmd.command.type_id();
+                }
+            }
+            Ok(None) => {} // No commands section
+            Err(_) => {}   // Decompression error on empty/malformed data
+        }
+    }
+
+    #[test]
+    fn commands_scr_old() {
+        let cursor = Cursor::new(SCR_OLD);
+        let mut replay = Replay::new(cursor).unwrap();
+
+        let commands = replay.get_commands().unwrap();
+        // Should parse without errors regardless of content
+        assert!(commands.is_some());
+    }
+
+    #[test]
+    fn command_type_ids() {
+        // Verify that Command::type_id() returns the correct values
+        assert_eq!(Command::Select { unit_tags: vec![] }.type_id(), 0x09);
+        assert_eq!(
+            Command::RightClick {
+                x: 0,
+                y: 0,
+                target_unit_tag: 0,
+                target_unit_type: 0,
+                queued: false,
+            }
+            .type_id(),
+            0x14
+        );
+        assert_eq!(Command::Train { unit_type: 0 }.type_id(), 0x1f);
+        assert_eq!(Command::Stop { queued: false }.type_id(), 0x1a);
+        assert_eq!(Command::HoldPosition { queued: false }.type_id(), 0x2b);
+        assert_eq!(
+            Command::Build {
+                order: 0,
+                x: 0,
+                y: 0,
+                unit_type: 0
+            }
+            .type_id(),
+            0x0c
+        );
+        assert_eq!(
+            Command::Unknown {
+                type_id: 0xff,
+                data: vec![]
+            }
+            .type_id(),
+            0xff
+        );
+    }
+
+    #[test]
+    fn parse_commands_unit_test() {
+        // Manually construct a simple command stream and verify parsing
+        let data: Vec<u8> = vec![
+            // Frame block: frame 10, 5 bytes of action data
+            0x0a, 0x00, 0x00, 0x00, // frame 10
+            0x05, // 5 bytes of action data
+            0x00, // player 0
+            0x09, // Select
+            0x01, // count = 1
+            0x42, 0x00, // unit tag 0x0042
+        ];
+
+        let commands = commands::parse_commands(&data).unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].frame, 10);
+        assert_eq!(commands[0].player_id, 0);
+        assert_eq!(
+            commands[0].command,
+            Command::Select {
+                unit_tags: vec![0x0042]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_commands_multiple_actions_per_frame() {
+        // Two commands in one frame block
+        let data: Vec<u8> = vec![
+            0x05, 0x00, 0x00, 0x00, // frame 5
+            0x08, // 8 bytes of action data
+            // First action: player 0, Stop (queued=false)
+            0x00, 0x1a, 0x00, // Second action: player 1, KeepAlive
+            0x01, 0x05, // Third action: player 0, HoldPosition (queued=true)
+            0x00, 0x2b, 0x01,
+        ];
+
+        let commands = commands::parse_commands(&data).unwrap();
+        assert_eq!(commands.len(), 3);
+
+        assert_eq!(commands[0].frame, 5);
+        assert_eq!(commands[0].player_id, 0);
+        assert_eq!(commands[0].command, Command::Stop { queued: false });
+
+        assert_eq!(commands[1].frame, 5);
+        assert_eq!(commands[1].player_id, 1);
+        assert_eq!(commands[1].command, Command::KeepAlive);
+
+        assert_eq!(commands[2].frame, 5);
+        assert_eq!(commands[2].player_id, 0);
+        assert_eq!(commands[2].command, Command::HoldPosition { queued: true });
+    }
+
+    #[test]
+    fn parse_commands_unknown_type() {
+        // Unknown command type should consume rest of frame block
+        let data: Vec<u8> = vec![
+            0x01, 0x00, 0x00, 0x00, // frame 1
+            0x06, // 6 bytes of action data
+            0x00, // player 0
+            0xfe, // unknown command type
+            0xaa, 0xbb, 0xcc, 0xdd, // 4 bytes of data
+        ];
+
+        let commands = commands::parse_commands(&data).unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].frame, 1);
+        assert_eq!(commands[0].player_id, 0);
+        assert_eq!(
+            commands[0].command,
+            Command::Unknown {
+                type_id: 0xfe,
+                data: vec![0xaa, 0xbb, 0xcc, 0xdd]
+            }
+        );
     }
 }
