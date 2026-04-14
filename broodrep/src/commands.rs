@@ -36,12 +36,14 @@ pub enum Command {
     SelectRemove { unit_tags: Vec<u16> },
 
     // -- Selection (1.21+ with extended unit tags) --
-    /// Select units in 1.21+ format (replaces current selection).
-    Select121 { unit_tags: Vec<u32> },
+    /// Select units in 1.21+ format (replaces current selection). The wire format uses 4 bytes
+    /// per entry: a u16 unit tag (same format as classic tags) followed by a u16 of unknown
+    /// purpose (observed as 0 in all known replays).
+    Select121 { unit_tags: Vec<u16> },
     /// Add units to current selection in 1.21+ format.
-    SelectAdd121 { unit_tags: Vec<u32> },
+    SelectAdd121 { unit_tags: Vec<u16> },
     /// Remove units from current selection in 1.21+ format.
-    SelectRemove121 { unit_tags: Vec<u32> },
+    SelectRemove121 { unit_tags: Vec<u16> },
 
     // -- Orders --
     /// Right-click (default order: move, attack, gather, etc.).
@@ -286,8 +288,10 @@ fn parse_select_data(data: &[u8]) -> Result<Vec<u16>, CommandParseError> {
     Ok(tags)
 }
 
-/// Parse a select command (0x63, 0x64, 0x65) with 32-bit unit tags (1.21+ format).
-fn parse_select121_data(data: &[u8]) -> Result<Vec<u32>, CommandParseError> {
+/// Parse a select command (0x63, 0x64, 0x65) with 1.21+ unit tags. Each tag is 4 bytes on the
+/// wire: a u16 unit tag followed by 2 bytes of padding (always 0). The tag itself uses the
+/// same format as classic u16 tags (11-bit one-based index + recycle counter).
+fn parse_select121_data(data: &[u8]) -> Result<Vec<u16>, CommandParseError> {
     if data.is_empty() {
         return Ok(Vec::new());
     }
@@ -302,7 +306,8 @@ fn parse_select121_data(data: &[u8]) -> Result<Vec<u32>, CommandParseError> {
     let mut cursor = Cursor::new(&data[1..]);
     let mut tags = Vec::with_capacity(count);
     for _ in 0..count {
-        tags.push(cursor.read_u32::<LE>()?);
+        tags.push(cursor.read_u16::<LE>()?);
+        let _padding = cursor.read_u16::<LE>()?;
     }
     Ok(tags)
 }

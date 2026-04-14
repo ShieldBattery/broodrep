@@ -541,17 +541,21 @@ impl From<broodrep::Command> for CommandData {
             broodrep::Command::Select { unit_tags } => CommandData::Select {
                 unit_tags: unit_tags.into_iter().map(u32::from).collect(),
             },
-            broodrep::Command::Select121 { unit_tags } => CommandData::Select { unit_tags },
+            broodrep::Command::Select121 { unit_tags } => CommandData::Select {
+                unit_tags: unit_tags.into_iter().map(u32::from).collect(),
+            },
             broodrep::Command::SelectAdd { unit_tags } => CommandData::SelectAdd {
                 unit_tags: unit_tags.into_iter().map(u32::from).collect(),
             },
-            broodrep::Command::SelectAdd121 { unit_tags } => CommandData::SelectAdd { unit_tags },
+            broodrep::Command::SelectAdd121 { unit_tags } => CommandData::SelectAdd {
+                unit_tags: unit_tags.into_iter().map(u32::from).collect(),
+            },
             broodrep::Command::SelectRemove { unit_tags } => CommandData::SelectRemove {
                 unit_tags: unit_tags.into_iter().map(u32::from).collect(),
             },
-            broodrep::Command::SelectRemove121 { unit_tags } => {
-                CommandData::SelectRemove { unit_tags }
-            }
+            broodrep::Command::SelectRemove121 { unit_tags } => CommandData::SelectRemove {
+                unit_tags: unit_tags.into_iter().map(u32::from).collect(),
+            },
             // Merge regular and 121 order variants
             broodrep::Command::RightClick {
                 x,

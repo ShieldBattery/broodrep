@@ -242,6 +242,11 @@ impl<R: Read + Seek> Replay<R> {
         };
 
         if section.is_modern() {
+            // TODO(tec27): Blizzard's modern sections (LMTS, SKIN, BFIX, CCLR, GCFG) wrap their
+            // payload in the same checksum + num_chunks + chunk format as legacy sections. This
+            // code returns the raw bytes including that inner header, so callers (like get_limits)
+            // must parse it themselves. We should generalize the inner header parsing here for
+            // Blizzard sections, while keeping raw passthrough for custom sections (like Sbat).
             self.inner.seek(SeekFrom::Start(offset))?;
             let size = self.inner.read_u32::<LE>()?;
             let mut data = vec![0; size as usize];
@@ -257,6 +262,43 @@ impl<R: Read + Seek> Replay<R> {
             )?;
             Ok(Some(bytes))
         }
+    }
+
+    /// Returns the game limits from the LMTS section. Returns default (classic BW 1.16) limits
+    /// if the section is not present (pre-1.21 replays).
+    pub fn get_limits(&mut self) -> Result<GameLimits, BroodrepError> {
+        let data = match self.get_raw_section(ReplaySection::Limits)? {
+            Some(d) => d,
+            None => return Ok(GameLimits::default()),
+        };
+        // Blizzard modern sections wrap their payload in the same header format as legacy
+        // sections: SectionHeader (checksum + num_chunks), then each chunk has size(4) +
+        // data(size). Parse through that to get the actual limits payload.
+        let mut reader = std::io::Cursor::new(&data);
+        let header = SectionHeader::read(&mut reader)?;
+        let mut payload = Vec::with_capacity(SIZE_LIMITS);
+        for _ in 0..header.num_chunks {
+            let chunk_size = reader.read_u32::<LE>()? as usize;
+            let pos = reader.position() as usize;
+            if pos + chunk_size > data.len() {
+                return Ok(GameLimits::default());
+            }
+            payload.extend_from_slice(&data[pos..pos + chunk_size]);
+            reader.set_position((pos + chunk_size) as u64);
+        }
+        if payload.len() < SIZE_LIMITS {
+            return Ok(GameLimits::default());
+        }
+        let mut cursor = std::io::Cursor::new(&payload);
+        Ok(GameLimits {
+            images: cursor.read_u32::<LE>()?,
+            sprites: cursor.read_u32::<LE>()?,
+            lone_sprites: cursor.read_u32::<LE>()?,
+            units: cursor.read_u32::<LE>()?,
+            bullets: cursor.read_u32::<LE>()?,
+            orders: cursor.read_u32::<LE>()?,
+            fow_sprites: cursor.read_u32::<LE>()?,
+        })
     }
 
     /// Returns the parsed ShieldBattery data section, if present.
@@ -305,12 +347,7 @@ impl<R: Read + Seek> Replay<R> {
     }
 
     fn read_section_header(reader: &mut R) -> Result<SectionHeader, BroodrepError> {
-        let checksum = reader.read_u32::<LE>()?;
-        let num_chunks = reader.read_u32::<LE>()?;
-        Ok(SectionHeader {
-            checksum,
-            num_chunks,
-        })
+        SectionHeader::read(reader)
     }
 
     fn read_legacy_section(
@@ -572,6 +609,15 @@ struct SectionHeader {
     num_chunks: u32,
 }
 
+impl SectionHeader {
+    fn read(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, BroodrepError> {
+        Ok(Self {
+            checksum: reader.read_u32::<LE>()?,
+            num_chunks: reader.read_u32::<LE>()?,
+        })
+    }
+}
+
 /// The engine the game was played under.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Engine {
@@ -721,6 +767,35 @@ impl fmt::Display for GameType {
             GameType::TeamCaptureTheFlag => write!(f, "Team Capture The Flag"),
             GameType::TopVsBottom => write!(f, "Top vs Bottom"),
             GameType::Unknown(value) => write!(f, "Unknown ({})", value),
+        }
+    }
+}
+
+/// Game object limits from the LMTS replay section. These control the sizes of various internal
+/// arrays in SC:R and affect unit tag encoding (11-bit indices for ≤1700 units, 13-bit for >1700).
+/// Classic (pre-1.21) replays don't have this section and use hardcoded 1.16 limits.
+#[derive(Debug, Clone, Copy)]
+pub struct GameLimits {
+    pub images: u32,
+    pub sprites: u32,
+    pub lone_sprites: u32,
+    pub units: u32,
+    pub bullets: u32,
+    pub orders: u32,
+    pub fow_sprites: u32,
+}
+
+impl Default for GameLimits {
+    /// Returns the classic BW 1.16 limits (pre-Remastered).
+    fn default() -> Self {
+        Self {
+            images: 5000,
+            sprites: 2500,
+            lone_sprites: 256,
+            units: 1700,
+            bullets: 100,
+            orders: 2000,
+            fow_sprites: 512,
         }
     }
 }
@@ -1238,12 +1313,13 @@ mod tests {
         assert!(!commands.is_empty());
 
         // First command: frame 170, player 0, Select121 with 1 unit
+        // Wire format: u16 tag (0x2cfe) + u16 unknown (0x0000)
         assert_eq!(commands[0].frame, 170);
         assert_eq!(commands[0].player_id, 0);
         assert_eq!(
             commands[0].command,
             Command::Select121 {
-                unit_tags: vec![0x00002cfe]
+                unit_tags: vec![0x2cfe]
             }
         );
 
@@ -1253,7 +1329,7 @@ mod tests {
         assert_eq!(
             commands[1].command,
             Command::Select121 {
-                unit_tags: vec![0x00002cd7]
+                unit_tags: vec![0x2cd7]
             }
         );
 
@@ -1407,5 +1483,36 @@ mod tests {
                 data: vec![0xaa, 0xbb, 0xcc, 0xdd]
             }
         );
+    }
+
+    #[test]
+    fn limits_scr_121() {
+        let cursor = Cursor::new(SCR_121);
+        let mut replay = Replay::new(cursor).unwrap();
+        let limits = replay.get_limits().unwrap();
+
+        // SC:R replays should have non-default limits from the LMTS section
+        assert!(
+            limits.units >= 1700,
+            "SC:R unit limit should be at least 1700, got {}",
+            limits.units
+        );
+        assert!(
+            limits.units <= 3400,
+            "SC:R unit limit should be at most 3400, got {}",
+            limits.units
+        );
+    }
+
+    #[test]
+    fn limits_legacy_returns_defaults() {
+        let cursor = Cursor::new(LEGACY);
+        let mut replay = Replay::new(cursor).unwrap();
+        let limits = replay.get_limits().unwrap();
+
+        // Legacy replays don't have LMTS, should return classic BW defaults
+        assert_eq!(limits.units, 1700);
+        assert_eq!(limits.images, 5000);
+        assert_eq!(limits.sprites, 2500);
     }
 }
