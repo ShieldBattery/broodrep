@@ -118,7 +118,7 @@ fn display_commands(replay: &mut broodrep::Replay<std::fs::File>) {
             }
 
             let mut sorted: Vec<_> = type_counts.into_iter().collect();
-            sorted.sort_by(|a, b| b.1.cmp(&a.1));
+            sorted.sort_by_key(|item| std::cmp::Reverse(item.1));
             for (name, count) in &sorted {
                 println!("    {name}: {count}");
             }

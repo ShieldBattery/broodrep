@@ -9,6 +9,7 @@ description = "A pure Rust library for reading StarCraft 1 replay files"
 [dependencies]
 byteorder = "1.5"
 chrono = { version = "0.4" }
+encoding_rs = "0.8"
 explode = "0.1"
 flate2 = "1.1"
 thiserror = "2.0"

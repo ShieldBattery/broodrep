@@ -3,6 +3,8 @@ use std::io::{Cursor, Read as _};
 use byteorder::{LittleEndian as LE, ReadBytesExt as _};
 use thiserror::Error;
 
+use crate::TextEncoding;
+
 #[derive(Error, Debug)]
 pub enum CommandParseError {
     #[error(transparent)]
@@ -313,7 +315,7 @@ fn parse_select121_data(data: &[u8]) -> Result<Vec<u16>, CommandParseError> {
 }
 
 /// Parse a single command from its type ID and data bytes.
-fn parse_command(type_id: u8, data: &[u8]) -> Command {
+fn parse_command(type_id: u8, data: &[u8], encoding: TextEncoding) -> Command {
     // Helper to read from data as a cursor. For fixed-size commands, the caller has already
     // verified the data length.
     let mut c = Cursor::new(data);
@@ -512,10 +514,7 @@ fn parse_command(type_id: u8, data: &[u8]) -> Command {
             let sender_slot = c.read_u8().unwrap();
             let mut msg_bytes = [0u8; 80];
             let _ = c.read(&mut msg_bytes);
-            let message = String::from_utf8_lossy(
-                &msg_bytes[..msg_bytes.iter().position(|&b| b == 0).unwrap_or(80)],
-            )
-            .into_owned();
+            let message = encoding.decode(&msg_bytes);
             Command::Chat {
                 sender_slot,
                 message,
@@ -561,7 +560,10 @@ fn parse_command(type_id: u8, data: &[u8]) -> Command {
 /// - `u8`: player ID
 /// - `u8`: command type ID
 /// - type-specific data bytes
-pub fn parse_commands(data: &[u8]) -> Result<Vec<ReplayCommand>, CommandParseError> {
+pub fn parse_commands(
+    data: &[u8],
+    encoding: TextEncoding,
+) -> Result<Vec<ReplayCommand>, CommandParseError> {
     let mut commands = Vec::new();
     let mut cursor = Cursor::new(data);
     let total_len = data.len() as u64;
@@ -670,7 +672,7 @@ pub fn parse_commands(data: &[u8]) -> Result<Vec<ReplayCommand>, CommandParseErr
             commands.push(ReplayCommand {
                 frame,
                 player_id,
-                command: parse_command(type_id, cmd_data),
+                command: parse_command(type_id, cmd_data, encoding),
             });
 
             pos = actual_end;

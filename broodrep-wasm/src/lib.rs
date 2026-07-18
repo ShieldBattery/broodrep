@@ -835,6 +835,9 @@ mod tests {
 
     const LEGACY_REPLAY: &[u8] = include_bytes!("../../broodrep/testdata/things.rep");
     const SCR_121_REPLAY: &[u8] = include_bytes!("../../broodrep/testdata/scr_replay.rep");
+    const SB_DATA_REPLAY: &[u8] = include_bytes!("../../broodrep/testdata/sb_data.rep");
+    const SCR_EMPTY_COMMANDS_REPLAY: &[u8] =
+        include_bytes!("../../broodrep/testdata/scr_empty_commands.rep");
 
     #[wasm_bindgen_test]
     fn test_parse_legacy_replay() {
@@ -863,6 +866,36 @@ mod tests {
         assert_eq!(header.engine, Engine::BroodWar);
         assert_eq!(header.frames, 715);
         assert_eq!(header.title, "u");
+    }
+
+    #[wasm_bindgen_test]
+    fn test_shieldbattery_game_id() {
+        let data = Uint8Array::from(SB_DATA_REPLAY);
+        let mut replay = parse_replay(data, None).unwrap();
+
+        let sb = replay.get_shieldbattery_section().unwrap().unwrap();
+        // The UUID string must be in RFC-4122 order, exactly as ShieldBattery wrote it
+        assert_eq!(
+            sb.game_id.to_string(),
+            "019878ca-6a88-7ebb-9b93-20d6e6bd892a"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn test_scr_empty_commands_replay() {
+        // Replay with no commands section data and the Sbat section at the end of the file; used
+        // to lose all modern sections and panic on getRawSection(playerNames)
+        let data = Uint8Array::from(SCR_EMPTY_COMMANDS_REPLAY);
+        let mut replay = parse_replay(data, None).unwrap();
+
+        let sb = replay.get_shieldbattery_section().unwrap();
+        assert!(sb.is_some());
+
+        let names = replay.get_raw_section(ReplaySection::PlayerNames).unwrap();
+        assert!(names.is_some_and(|n| !n.is_empty()));
+
+        let commands = replay.get_raw_section(ReplaySection::Commands).unwrap();
+        assert_eq!(commands, Some(vec![]));
     }
 
     #[wasm_bindgen_test]
