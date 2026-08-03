@@ -95,7 +95,7 @@ class Replay {
   loadRawCustomSection(section_id: number): RawSection | undefined
 
   // Command APIs
-  getCommands(): ReplayCommand[] | undefined
+  getCommands(options?: CommandParseConfig | null): ReplayCommand[] | undefined
   loadCommands(options?: CommandParseConfig): ParsedCommands | undefined
   getCommandSummary(options?: CommandParseConfig): CommandSummary | undefined
   queryCommands(

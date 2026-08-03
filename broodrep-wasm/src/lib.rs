@@ -1573,15 +1573,20 @@ impl Replay {
     }
 
     /// Returns the parsed commands from the replay, or `undefined` if the commands section is not
-    /// present.
+    /// present. Optional command parsing limits may be supplied for untrusted or unusually large
+    /// replays.
     #[wasm_bindgen(
         js_name = getCommands,
         unchecked_return_type = "ReplayCommand[] | undefined"
     )]
-    pub fn get_commands(&mut self) -> Result<JsValue, JsValue> {
+    pub fn get_commands(
+        &mut self,
+        options: Option<CommandParseConfigInput>,
+    ) -> Result<JsValue, JsValue> {
+        let config = command_parse_config_from_js(options)?;
         let commands = self
             .replay
-            .read_commands()
+            .read_commands_with_config(config)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         match commands {
             Some(commands) => commands_to_js(commands),
@@ -1827,6 +1832,29 @@ mod tests {
         assert!(raw.copy_range(raw.length() as f64, 0.0).is_ok());
         let range_error = raw.copy_range(raw.length() as f64, 1.0).unwrap_err();
         assert!(range_error.is_instance_of::<js_sys::RangeError>());
+    }
+
+    #[wasm_bindgen_test]
+    fn test_get_commands_accepts_custom_limits() {
+        let data = Uint8Array::from(LEGACY_REPLAY);
+        let mut replay = parse_replay(data, None).unwrap();
+        let commands = replay.get_commands(None).unwrap();
+        assert!(js_sys::Array::is_array(&commands));
+
+        let options = serde_wasm_bindgen::to_value(&CommandParseConfig {
+            max_commands: Some(1),
+            max_owned_data_bytes: None,
+        })
+        .unwrap();
+
+        let error = replay
+            .get_commands(Some(options.unchecked_into()))
+            .unwrap_err();
+        assert!(
+            error
+                .as_string()
+                .is_some_and(|message| message.contains("command count exceeds limit of 1"))
+        );
     }
 
     #[wasm_bindgen_test]
