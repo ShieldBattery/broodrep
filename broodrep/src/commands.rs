@@ -155,7 +155,6 @@ impl CommandKind {
             Self::Build
             | Self::CancelBuild
             | Self::CancelAddon
-            | Self::LiftOff
             | Self::Train
             | Self::CancelTrain
             | Self::UnitMorph
@@ -179,6 +178,7 @@ impl CommandKind {
             | Self::Stim
             | Self::CarrierStop
             | Self::ReaverStop
+            | Self::LiftOff
             | Self::OrderNothing => CommandCategory::Ability,
             Self::Tech | Self::CancelTech | Self::Upgrade | Self::CancelUpgrade => {
                 CommandCategory::Research
@@ -198,7 +198,7 @@ impl CommandKind {
     /// Whether this kind counts toward raw actions-per-minute (APM).
     ///
     /// Broodrep's raw APM policy counts selections, orders, production, abilities, research,
-    /// hotkeys, diplomacy, and minimap pings. It excludes the internal `OrderNothing` no-op,
+    /// hotkeys, and minimap pings. It excludes the internal `OrderNothing` no-op, diplomacy,
     /// game-control commands, chat, network traffic, player-status records, and commands without a
     /// typed interpretation. This deliberately does not attempt the redundancy filtering used by
     /// effective-APM metrics.
@@ -212,7 +212,6 @@ impl CommandKind {
                 | CommandCategory::Ability
                 | CommandCategory::Research
                 | CommandCategory::Hotkey
-                | CommandCategory::Diplomacy
         ) && !matches!(self, Self::OrderNothing))
             || matches!(self, Self::MinimapPing)
     }
@@ -1161,6 +1160,7 @@ mod tests {
         assert_eq!(CommandKind::Select.category(), CommandCategory::Selection);
         assert_eq!(CommandKind::Build.category(), CommandCategory::Production);
         assert_eq!(CommandKind::Stim.category(), CommandCategory::Ability);
+        assert_eq!(CommandKind::LiftOff.category(), CommandCategory::Ability);
         assert_eq!(
             CommandKind::MinimapPing.category(),
             CommandCategory::Communication
@@ -1177,7 +1177,6 @@ mod tests {
             CommandKind::Stim,
             CommandKind::Upgrade,
             CommandKind::Hotkey,
-            CommandKind::Alliance,
             CommandKind::MinimapPing,
         ] {
             assert!(kind.counts_as_apm_action(), "{kind:?} should count");
@@ -1188,6 +1187,8 @@ mod tests {
             CommandKind::Chat,
             CommandKind::KeepAlive,
             CommandKind::LeaveGame,
+            CommandKind::Vision,
+            CommandKind::Alliance,
             CommandKind::OrderNothing,
             CommandKind::Known,
             CommandKind::Unknown,

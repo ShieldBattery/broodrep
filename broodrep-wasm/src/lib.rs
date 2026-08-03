@@ -1489,8 +1489,8 @@ impl Replay {
     /// Calculates per-player raw actions-per-minute without retaining or serializing individual
     /// command objects, or returns `undefined` if the replay has no command section.
     ///
-    /// Raw APM counts selections, orders, production, abilities, research, hotkeys, diplomacy,
-    /// and minimap pings over the replay's complete duration. It excludes game-control commands,
+    /// Raw APM counts selections, orders, production, abilities, research, hotkeys, and minimap
+    /// pings over the replay's complete duration. It excludes diplomacy, game-control commands,
     /// chat, network traffic, player-status records, and untyped commands. It does not apply the
     /// redundancy filtering associated with effective-APM metrics.
     #[wasm_bindgen(js_name = getPlayerApm)]
@@ -2044,6 +2044,7 @@ mod tests {
         let commands = [
             core_command(0, 0, broodrep::Command::Select { unit_tags: vec![] }),
             core_command(0, 0, broodrep::Command::MinimapPing { x: 0, y: 0 }),
+            core_command(0, 0, broodrep::Command::Alliance { flags: 0 }),
             core_command(0, 0, broodrep::Command::KeepAlive),
             core_command(
                 0,
@@ -2074,7 +2075,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .get_player_apm();
-        let expected = [4_059, 2_165, 3_056, 9_949, 8_486, 8_365];
+        let expected = [4_059, 2_149, 3_054, 9_949, 8_486, 8_361];
 
         assert_eq!(streamed.frames, 56_209);
         assert_eq!(streamed.players.len(), expected.len());

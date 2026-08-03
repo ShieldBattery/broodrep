@@ -366,7 +366,7 @@ ID; the lists are unioned. Exclusions are applied afterward and always win. A pr
 inclusion list intentionally matches no commands.
 
 `getPlayerApm` calculates raw APM over the complete replay duration. It counts selections, orders,
-production, abilities, research, hotkeys, diplomacy, and minimap pings. It excludes game-control
+production, abilities, research, hotkeys, and minimap pings. It excludes diplomacy, game-control
 commands, chat, network traffic, player-status records, and untyped commands. It does not apply the
 redundancy filtering used by effective-APM metrics.
 The result uses `Player.networkId` values, includes only IDs with at least one counted action, and
