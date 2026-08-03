@@ -98,6 +98,11 @@ class Replay {
   getCommands(): ReplayCommand[] | undefined
   loadCommands(options?: CommandParseConfig): ParsedCommands | undefined
   getCommandSummary(options?: CommandParseConfig): CommandSummary | undefined
+  queryCommands(
+    query: CommandQuery,
+    options?: CommandParseConfig,
+  ): ReplayCommand[] | undefined
+  getPlayerApm(options?: CommandParseConfig): PlayerApmSummary | undefined
 
   // Method for retrieving parsed ShieldBattery data
   getShieldBatterySection(): ShieldBatteryData | undefined
@@ -170,6 +175,8 @@ class ParsedCommands {
   readonly length: number
   isEmpty(): boolean
   getRange(start: number, count: number): ReplayCommand[]
+  query(query: CommandQuery): ReplayCommand[]
+  getPlayerApm(): PlayerApmSummary
 }
 
 class RawSection {
@@ -182,7 +189,54 @@ interface CommandSummary {
   total: number
   counts: Array<{ typeId: number; count: number }>
 }
+
+type CommandKind = ReplayCommand['command']['type']
+
+type CommandCategory =
+  | 'selection'
+  | 'order'
+  | 'production'
+  | 'ability'
+  | 'research'
+  | 'hotkey'
+  | 'diplomacy'
+  | 'gameControl'
+  | 'communication'
+  | 'network'
+  | 'playerStatus'
+  | 'unknown'
+
+interface CommandQuery {
+  playerIds?: number[] // Player.networkId values, not slot IDs
+  startFrame?: number // Inclusive
+  endFrame?: number // Exclusive
+  includeKinds?: CommandKind[]
+  includeCategories?: CommandCategory[]
+  includeTypeIds?: number[] // Raw wire-format IDs; useful for known/unknown commands
+  excludeKinds?: CommandKind[]
+  excludeCategories?: CommandCategory[]
+  excludeTypeIds?: number[]
+}
+
+interface PlayerApmSummary {
+  frames: number
+  durationMinutes: number
+  players: Array<{ playerId: number; actions: number; apm: number }>
+}
 ```
+
+Command queries preserve replay order. `playerIds` contains network IDs matching
+`Player.networkId`, not slot indices. Player and frame constraints are intersected. If any
+inclusion list is present, a command must match at least one included kind, category, or raw type
+ID; the lists are unioned. Exclusions are applied afterward and always win. A present but empty
+inclusion list intentionally matches no commands.
+
+`getPlayerApm` calculates raw APM over the complete replay duration. It counts selections, orders,
+production, abilities, research, hotkeys, diplomacy, and minimap pings. It excludes game-control
+commands, chat, network traffic, player-status records, and untyped commands. It does not apply the
+redundancy filtering used by effective-APM metrics.
+The result uses `Player.networkId` values, includes only IDs with at least one counted action, and
+may include an observer ID if that observer issued a counted command.
 
 ### `DecompressionConfig`
 
@@ -260,19 +314,27 @@ if (shieldBatteryData) {
 
 ## Building
 
-````bash
+```bash
 # Install wasm-pack if not already installed
 cargo install wasm-pack
 
 # Build
 pnpm run build
+```
+
+The default feature set installs richer panic messages. Production builds that do not need the
+panic hook can omit it (currently saving about 2.7 KiB from the optimized uncompressed module):
+
+```bash
+wasm-pack build --target web -- --no-default-features
+```
 
 ## Testing
 
 ```bash
 # Run WASM tests in nodejs
 pnpm test
-````
+```
 
 ## Examples
 

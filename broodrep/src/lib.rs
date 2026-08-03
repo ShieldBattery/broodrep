@@ -12,7 +12,9 @@ use explode::ExplodeReader;
 use flate2::Decompress;
 use thiserror::Error;
 
-pub use crate::commands::{Command, CommandParseConfig, CommandParseError, ReplayCommand};
+pub use crate::commands::{
+    Command, CommandCategory, CommandKind, CommandParseConfig, CommandParseError, ReplayCommand,
+};
 pub use crate::compression::{DecompressionConfig, DecompressionError};
 use crate::compression::{SafeDecompressor, decompress_zlib_into};
 pub use crate::shieldbattery::{ShieldBatteryData, ShieldBatteryDataError};
@@ -1748,7 +1750,15 @@ mod tests {
         let mut replay = Replay::new(Cursor::new(LONG_HUNTERS)).unwrap();
 
         assert_eq!(replay.frames(), 56_209);
-        assert_eq!(replay.read_commands().unwrap().unwrap().len(), 36_167);
+        let player_network_ids: std::collections::HashSet<_> =
+            replay.players().map(|player| player.network_id).collect();
+        let commands = replay.read_commands().unwrap().unwrap();
+        assert_eq!(commands.len(), 36_167);
+        assert!(
+            commands
+                .iter()
+                .all(|command| player_network_ids.contains(&command.player_id))
+        );
     }
 
     #[test]

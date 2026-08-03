@@ -52,6 +52,9 @@ function commandSummary(replay) {
   return summary === undefined ? 0 : summary.total + summary.counts.length;
 }
 
+const playerZeroQuery = { playerIds: [0] };
+const productionQuery = { includeCategories: ['production'] };
+
 function commandsLength(replay) {
   const commands = replay.getCommands();
   return commands === undefined ? 0 : commands.length;
@@ -78,6 +81,16 @@ function benchmarkReplay(path) {
   const summaryReplay = parseReplay(data);
   try {
     benchmark('Replay.getCommandSummary', () => commandSummary(summaryReplay));
+    benchmark('Replay.getPlayerApm', () => {
+      const summary = summaryReplay.getPlayerApm();
+      return summary === undefined ? 0 : summary.players.length;
+    });
+    benchmark('Replay.queryCommands (player 0)', () =>
+      summaryReplay.queryCommands(playerZeroQuery).length,
+    );
+    benchmark('Replay.queryCommands (production)', () =>
+      summaryReplay.queryCommands(productionQuery).length,
+    );
   } finally {
     summaryReplay.free();
   }
@@ -159,6 +172,12 @@ function benchmarkReplay(path) {
         const page = parsedCommands.getRange(0, pageSize);
         return page.length;
       });
+      benchmark('ParsedCommands.query (player 0)', () =>
+        parsedCommands.query(playerZeroQuery).length,
+      );
+      benchmark('ParsedCommands.getPlayerApm', () =>
+        parsedCommands.getPlayerApm().players.length,
+      );
     }
   } finally {
     parsedCommands?.free();

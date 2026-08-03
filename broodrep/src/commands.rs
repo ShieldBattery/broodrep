@@ -62,10 +62,160 @@ impl Default for CommandParseConfig {
 pub struct ReplayCommand {
     /// The game frame this command was issued on.
     pub frame: u32,
-    /// The player who issued this command (0-7 for players, higher for observers).
+    /// Network ID of the player who issued this command. This matches [`crate::Player::network_id`],
+    /// not [`crate::Player::slot_id`]. Values above 7 may identify observers.
     pub player_id: u8,
     /// The command data.
     pub command: Command,
+}
+
+/// A wire-format-independent command kind.
+///
+/// Commands whose representation changed in StarCraft 1.21+ share a kind with their legacy
+/// equivalents, so callers can classify commands without knowing the replay format.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum CommandKind {
+    Select,
+    SelectAdd,
+    SelectRemove,
+    RightClick,
+    TargetedOrder,
+    Build,
+    CancelBuild,
+    CancelAddon,
+    LiftOff,
+    Train,
+    CancelTrain,
+    UnitMorph,
+    BuildingMorph,
+    CancelMorph,
+    TrainFighter,
+    Stop,
+    HoldPosition,
+    Burrow,
+    Unburrow,
+    Cloak,
+    Decloak,
+    Siege,
+    Unsiege,
+    ReturnCargo,
+    UnloadAll,
+    Unload,
+    MergeArchon,
+    MergeDarkArchon,
+    CancelNuke,
+    Stim,
+    CarrierStop,
+    ReaverStop,
+    OrderNothing,
+    Tech,
+    CancelTech,
+    Upgrade,
+    CancelUpgrade,
+    Hotkey,
+    Vision,
+    Alliance,
+    GameSpeed,
+    Pause,
+    Resume,
+    Cheat,
+    Chat,
+    KeepAlive,
+    LeaveGame,
+    MinimapPing,
+    Latency,
+    Known,
+    Unknown,
+}
+
+/// A broad, mutually exclusive classification of replay commands.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum CommandCategory {
+    Selection,
+    Order,
+    Production,
+    Ability,
+    Research,
+    Hotkey,
+    Diplomacy,
+    GameControl,
+    Communication,
+    Network,
+    PlayerStatus,
+    Unknown,
+}
+
+impl CommandKind {
+    /// Returns the broad category this command kind belongs to.
+    #[must_use]
+    pub const fn category(self) -> CommandCategory {
+        match self {
+            Self::Select | Self::SelectAdd | Self::SelectRemove => CommandCategory::Selection,
+            Self::RightClick | Self::TargetedOrder => CommandCategory::Order,
+            Self::Build
+            | Self::CancelBuild
+            | Self::CancelAddon
+            | Self::LiftOff
+            | Self::Train
+            | Self::CancelTrain
+            | Self::UnitMorph
+            | Self::BuildingMorph
+            | Self::CancelMorph
+            | Self::TrainFighter => CommandCategory::Production,
+            Self::Stop
+            | Self::HoldPosition
+            | Self::Burrow
+            | Self::Unburrow
+            | Self::Cloak
+            | Self::Decloak
+            | Self::Siege
+            | Self::Unsiege
+            | Self::ReturnCargo
+            | Self::UnloadAll
+            | Self::Unload
+            | Self::MergeArchon
+            | Self::MergeDarkArchon
+            | Self::CancelNuke
+            | Self::Stim
+            | Self::CarrierStop
+            | Self::ReaverStop
+            | Self::OrderNothing => CommandCategory::Ability,
+            Self::Tech | Self::CancelTech | Self::Upgrade | Self::CancelUpgrade => {
+                CommandCategory::Research
+            }
+            Self::Hotkey => CommandCategory::Hotkey,
+            Self::Vision | Self::Alliance => CommandCategory::Diplomacy,
+            Self::GameSpeed | Self::Pause | Self::Resume | Self::Cheat => {
+                CommandCategory::GameControl
+            }
+            Self::Chat | Self::MinimapPing => CommandCategory::Communication,
+            Self::KeepAlive | Self::Latency => CommandCategory::Network,
+            Self::LeaveGame => CommandCategory::PlayerStatus,
+            Self::Known | Self::Unknown => CommandCategory::Unknown,
+        }
+    }
+
+    /// Whether this kind counts toward raw actions-per-minute (APM).
+    ///
+    /// Broodrep's raw APM policy counts selections, orders, production, abilities, research,
+    /// hotkeys, diplomacy, and minimap pings. It excludes the internal `OrderNothing` no-op,
+    /// game-control commands, chat, network traffic, player-status records, and commands without a
+    /// typed interpretation. This deliberately does not attempt the redundancy filtering used by
+    /// effective-APM metrics.
+    #[must_use]
+    pub const fn counts_as_apm_action(self) -> bool {
+        (matches!(
+            self.category(),
+            CommandCategory::Selection
+                | CommandCategory::Order
+                | CommandCategory::Production
+                | CommandCategory::Ability
+                | CommandCategory::Research
+                | CommandCategory::Hotkey
+                | CommandCategory::Diplomacy
+        ) && !matches!(self, Self::OrderNothing))
+            || matches!(self, Self::MinimapPing)
+    }
 }
 
 /// The data for a specific command type. Common gameplay commands are parsed into typed variants;
@@ -837,6 +987,66 @@ pub fn parse_commands_with_config(
 
 /// Returns the command type ID for a command.
 impl Command {
+    /// Returns this command's wire-format-independent kind.
+    #[must_use]
+    pub const fn kind(&self) -> CommandKind {
+        match self {
+            Self::Select { .. } | Self::Select121 { .. } => CommandKind::Select,
+            Self::SelectAdd { .. } | Self::SelectAdd121 { .. } => CommandKind::SelectAdd,
+            Self::SelectRemove { .. } | Self::SelectRemove121 { .. } => CommandKind::SelectRemove,
+            Self::RightClick { .. } | Self::RightClick121 { .. } => CommandKind::RightClick,
+            Self::TargetedOrder { .. } | Self::TargetedOrder121 { .. } => {
+                CommandKind::TargetedOrder
+            }
+            Self::Build { .. } => CommandKind::Build,
+            Self::CancelBuild => CommandKind::CancelBuild,
+            Self::CancelAddon => CommandKind::CancelAddon,
+            Self::LiftOff { .. } => CommandKind::LiftOff,
+            Self::Train { .. } => CommandKind::Train,
+            Self::CancelTrain { .. } => CommandKind::CancelTrain,
+            Self::UnitMorph { .. } => CommandKind::UnitMorph,
+            Self::BuildingMorph { .. } => CommandKind::BuildingMorph,
+            Self::CancelMorph => CommandKind::CancelMorph,
+            Self::TrainFighter => CommandKind::TrainFighter,
+            Self::Stop { .. } => CommandKind::Stop,
+            Self::HoldPosition { .. } => CommandKind::HoldPosition,
+            Self::Burrow { .. } => CommandKind::Burrow,
+            Self::Unburrow { .. } => CommandKind::Unburrow,
+            Self::Cloak { .. } => CommandKind::Cloak,
+            Self::Decloak { .. } => CommandKind::Decloak,
+            Self::Siege { .. } => CommandKind::Siege,
+            Self::Unsiege { .. } => CommandKind::Unsiege,
+            Self::ReturnCargo { .. } => CommandKind::ReturnCargo,
+            Self::UnloadAll { .. } => CommandKind::UnloadAll,
+            Self::Unload { .. } | Self::Unload121 { .. } => CommandKind::Unload,
+            Self::MergeArchon => CommandKind::MergeArchon,
+            Self::MergeDarkArchon => CommandKind::MergeDarkArchon,
+            Self::CancelNuke => CommandKind::CancelNuke,
+            Self::Stim => CommandKind::Stim,
+            Self::CarrierStop => CommandKind::CarrierStop,
+            Self::ReaverStop => CommandKind::ReaverStop,
+            Self::OrderNothing => CommandKind::OrderNothing,
+            Self::Tech { .. } => CommandKind::Tech,
+            Self::CancelTech => CommandKind::CancelTech,
+            Self::Upgrade { .. } => CommandKind::Upgrade,
+            Self::CancelUpgrade => CommandKind::CancelUpgrade,
+            Self::Hotkey { .. } => CommandKind::Hotkey,
+            Self::Vision { .. } => CommandKind::Vision,
+            Self::Alliance { .. } => CommandKind::Alliance,
+            Self::GameSpeed { .. } => CommandKind::GameSpeed,
+            Self::Pause => CommandKind::Pause,
+            Self::Resume => CommandKind::Resume,
+            Self::Cheat { .. } => CommandKind::Cheat,
+            Self::Chat { .. } => CommandKind::Chat,
+            Self::KeepAlive => CommandKind::KeepAlive,
+            Self::LeaveGame { .. } => CommandKind::LeaveGame,
+            Self::MinimapPing { .. } => CommandKind::MinimapPing,
+            Self::Latency { .. } => CommandKind::Latency,
+            Self::Known { .. } => CommandKind::Known,
+            Self::Unknown { .. } => CommandKind::Unknown,
+        }
+    }
+
     pub fn type_id(&self) -> u8 {
         match self {
             Command::Select { .. } => 0x09,
@@ -915,6 +1125,74 @@ mod tests {
         CommandParseConfig {
             max_commands: usize::MAX,
             max_owned_data_bytes,
+        }
+    }
+
+    #[test]
+    fn command_kind_normalizes_121_wire_variants() {
+        assert_eq!(
+            Command::Select121 { unit_tags: vec![] }.kind(),
+            CommandKind::Select
+        );
+        assert_eq!(
+            Command::RightClick121 {
+                x: 0,
+                y: 0,
+                target_unit_tag: 0,
+                target_unit_extra: 0,
+                target_unit_type: 0,
+                queued: false,
+            }
+            .kind(),
+            CommandKind::RightClick
+        );
+        assert_eq!(
+            Command::Unload121 {
+                unit_tag: 0,
+                extra: 0,
+            }
+            .kind(),
+            CommandKind::Unload
+        );
+    }
+
+    #[test]
+    fn command_categories_are_semantic() {
+        assert_eq!(CommandKind::Select.category(), CommandCategory::Selection);
+        assert_eq!(CommandKind::Build.category(), CommandCategory::Production);
+        assert_eq!(CommandKind::Stim.category(), CommandCategory::Ability);
+        assert_eq!(
+            CommandKind::MinimapPing.category(),
+            CommandCategory::Communication
+        );
+        assert_eq!(CommandKind::Known.category(), CommandCategory::Unknown);
+    }
+
+    #[test]
+    fn raw_apm_policy_includes_actions_and_excludes_metadata() {
+        for kind in [
+            CommandKind::Select,
+            CommandKind::RightClick,
+            CommandKind::Train,
+            CommandKind::Stim,
+            CommandKind::Upgrade,
+            CommandKind::Hotkey,
+            CommandKind::Alliance,
+            CommandKind::MinimapPing,
+        ] {
+            assert!(kind.counts_as_apm_action(), "{kind:?} should count");
+        }
+
+        for kind in [
+            CommandKind::GameSpeed,
+            CommandKind::Chat,
+            CommandKind::KeepAlive,
+            CommandKind::LeaveGame,
+            CommandKind::OrderNothing,
+            CommandKind::Known,
+            CommandKind::Unknown,
+        ] {
+            assert!(!kind.counts_as_apm_action(), "{kind:?} should not count");
         }
     }
 
