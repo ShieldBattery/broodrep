@@ -18,7 +18,7 @@ pub use crate::shieldbattery::{ShieldBatteryData, ShieldBatteryDataError};
 
 pub mod commands;
 mod compression;
-mod shieldbattery;
+pub mod shieldbattery;
 
 #[derive(Error, Debug)]
 pub enum BroodrepError {

@@ -1,0 +1,50 @@
+[package]
+name = "broodrep-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.broodrep]
+path = "../broodrep"
+
+[[bin]]
+name = "replay_parse"
+path = "fuzz_targets/replay_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "commands_parse"
+path = "fuzz_targets/commands_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shieldbattery_parse"
+path = "fuzz_targets/shieldbattery_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "seed_gen"
+path = "seed_gen/main.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
+
+# Detached from the parent workspace: this is its own workspace root so
+# `cargo fuzz` doesn't try to unify dependency resolution with broodrep's
+# own Cargo.lock.
+[workspace]
