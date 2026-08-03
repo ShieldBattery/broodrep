@@ -214,6 +214,22 @@
           </table>
         </div>
 
+        <div class="info-section" id="commandAnalysisSection" style="display: none">
+          <h3>Command Analysis</h3>
+          <div class="info-grid" id="commandSummary"></div>
+          <table class="players-table">
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Network ID</th>
+                <th>Counted Actions</th>
+                <th>Raw APM</th>
+              </tr>
+            </thead>
+            <tbody id="apmTableBody"></tbody>
+          </table>
+        </div>
+
         <div class="info-section" id="shieldBatterySection" style="display: none">
           <h3>ShieldBattery Data</h3>
           <div class="info-grid" id="shieldBatteryInfo"></div>
@@ -339,6 +355,59 @@
           )
           .join('')
 
+        // Command analysis stays inside WASM until a compact result or filtered set is requested.
+        // Command player IDs match Player.networkId, not Player.slotId.
+        const commandAnalysisSection = document.getElementById('commandAnalysisSection')
+        const commandSummary = document.getElementById('commandSummary')
+        const apmTableBody = document.getElementById('apmTableBody')
+        const playersByNetworkId = new Map(activePlayers.map(player => [player.networkId, player]))
+        const apm = replay.getPlayerApm()
+        const firstPlayer = activePlayers[0]
+        const productionCommands = firstPlayer
+          ? replay.queryCommands({
+              playerIds: [firstPlayer.networkId],
+              includeCategories: ['production'],
+            })
+          : undefined
+
+        if (apm || productionCommands) {
+          commandAnalysisSection.style.display = 'block'
+          const firstProduction = productionCommands?.[0]
+          commandSummary.innerHTML = `
+            <div class="info-item">
+              <div class="info-label">Replay Duration</div>
+              <div class="info-value">${apm?.durationMinutes.toFixed(2) ?? 'Unknown'} minutes</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">${firstPlayer?.name ?? 'First player'} Production Commands</div>
+              <div class="info-value">${productionCommands?.length.toLocaleString() ?? 0}</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">First Production Command</div>
+              <div class="info-value">${
+                firstProduction
+                  ? `${firstProduction.command.type} at frame ${firstProduction.frame.toLocaleString()}`
+                  : 'None'
+              }</div>
+            </div>
+          `
+          apmTableBody.innerHTML = (apm?.players ?? [])
+            .map(result => {
+              const player = playersByNetworkId.get(result.playerId)
+              return `
+                <tr>
+                  <td><strong>${player?.name ?? 'Observer or unknown'}</strong></td>
+                  <td>${result.playerId}</td>
+                  <td>${result.actions.toLocaleString()}</td>
+                  <td>${result.apm.toFixed(1)}</td>
+                </tr>
+              `
+            })
+            .join('')
+        } else {
+          commandAnalysisSection.style.display = 'none'
+        }
+
         // Observers
         const observersSection = document.getElementById('observersSection')
         const observersTableBody = document.getElementById('observersTableBody')
@@ -444,11 +513,13 @@
           const uint8Array = new Uint8Array(arrayBuffer)
 
           const replay = parseReplay(uint8Array)
-
-          showStatus(`Successfully parsed ${file.name}!`, 'success')
-          displayReplayInfo(replay)
-
-          console.log('Parsed replay:', replay)
+          try {
+            displayReplayInfo(replay)
+            showStatus(`Successfully parsed ${file.name}!`, 'success')
+          } finally {
+            // Replay and ParsedCommands are explicit WASM owners; release them when finished.
+            replay.free()
+          }
         } catch (error) {
           console.error('Parse error:', error)
           showStatus(`Failed to parse replay: ${error}`, 'error')

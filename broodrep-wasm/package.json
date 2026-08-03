@@ -31,6 +31,7 @@
     "clean": "node -e \"require('node:fs').rmSync('pkg', { recursive: true, force: true }); require('node:fs').rmSync('pkg-node', { recursive: true, force: true })\"",
     "bench": "pnpm run build:node && node --expose-gc benchmarks/node.mjs",
     "dev": "pnpm run build:web && vite",
+    "example": "pnpm run build:node && node examples/usage.mjs",
     "prepublishOnly": "pnpm run clean && pnpm run build && pnpm run test",
     "test": "wasm-pack test --node"
   },

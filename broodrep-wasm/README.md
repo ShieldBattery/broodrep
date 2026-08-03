@@ -340,8 +340,10 @@ pnpm test
 
 See the [examples](./examples/) directory for complete usage examples:
 
-- `index.html` - Interactive web demo with file upload
-- `usage.mjs` - Comprehensive JavaScript examples
+- `index.html` - Interactive upload demo with player APM and filtered production commands
+- `usage.mjs` - Node examples covering metadata, filtered queries, retained commands, and APM
+
+Run the Node examples with `pnpm run example`.
 
 For the web version, run:
 

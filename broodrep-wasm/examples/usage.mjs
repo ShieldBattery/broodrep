@@ -1,8 +1,8 @@
 /**
  * broodrep-wasm Usage Examples
  *
- * Run with: node usage.js
- * (Make sure to build the WASM package first: npm run build:node)
+ * Run with: node examples/usage.mjs
+ * (Make sure to build the WASM package first: pnpm run build:node)
  */
 
 import fs from 'fs'
@@ -48,6 +48,7 @@ function basicExample() {
     console.log(`  Engine: ${header.engine}`)
     console.log(`  Players: ${replay.players().filter(p => !p.isEmpty && !p.isObserver).length}`)
     console.log(`  Observers: ${replay.observers().length}`)
+    replay.free()
   } catch (error) {
     console.error('✗ Failed to parse replay:', error)
   }
@@ -126,13 +127,92 @@ function detailedExample() {
     const allSlots = replay.slots()
     console.log(`\nTotal Slots: ${allSlots.length}`)
     console.log(`Empty Slots: ${allSlots.filter(p => p.isEmpty).length}`)
+    replay.free()
   } catch (error) {
     console.error('✗ Failed to parse replay:', error)
   }
 }
 
 /**
- * Example 3: Error handling patterns
+ * Example 3: Command analysis without exporting every command
+ */
+function commandAnalysisExample() {
+  console.log('\n=== Command Analysis Example ===')
+
+  const testReplayPath = path.join(
+    import.meta.dirname,
+    '..',
+    '..',
+    'broodrep',
+    'testdata',
+    'long_hunters.rep',
+  )
+
+  if (!fs.existsSync(testReplayPath)) {
+    console.log('Long replay fixture not found, skipping command analysis example...')
+    return
+  }
+
+  const replay = parseReplay(new Uint8Array(fs.readFileSync(testReplayPath)))
+  try {
+    const playersByNetworkId = new Map(
+      replay
+        .players()
+        .filter(player => !player.isEmpty && !player.isObserver)
+        .map(player => [player.networkId, player]),
+    )
+
+    // APM is calculated entirely in WASM; only this compact summary crosses into JavaScript.
+    const apm = replay.getPlayerApm()
+    console.log('Raw APM:')
+    for (const result of apm?.players ?? []) {
+      const player = playersByNetworkId.get(result.playerId)
+      console.log(
+        `  ${player?.name ?? `Network ID ${result.playerId}`}: ${result.apm.toFixed(1)} ` +
+          `(${result.actions.toLocaleString()} actions)`,
+      )
+    }
+
+    const firstPlayer = playersByNetworkId.values().next().value
+    if (firstPlayer) {
+      // playerIds are network IDs, not slot IDs. Only matching commands become JS objects.
+      const production = replay.queryCommands({
+        playerIds: [firstPlayer.networkId],
+        includeCategories: ['production'],
+      })
+      console.log(
+        `Production commands by ${firstPlayer.name}: ${production?.length.toLocaleString() ?? 0}`,
+      )
+
+      // Retain parsed commands only when several queries justify paying the memory cost once.
+      const commands = replay.loadCommands()
+      if (commands) {
+        try {
+          const openingSelections = commands.query({
+            playerIds: [firstPlayer.networkId],
+            endFrame: 5_000,
+            includeCategories: ['selection'],
+            excludeKinds: ['selectRemove'],
+          })
+          const openingOrders = commands.query({
+            playerIds: [firstPlayer.networkId],
+            endFrame: 5_000,
+            includeCategories: ['order'],
+          })
+          console.log(`Opening selection commands: ${openingSelections.length.toLocaleString()}`)
+          console.log(`Opening order commands: ${openingOrders.length.toLocaleString()}`)
+        } finally {
+          commands.free()
+        }
+      }
+    }
+  } finally {
+    replay.free()
+  }
+}
+
+/**
+ * Example 4: Error handling patterns
  */
 function errorHandlingExample() {
   console.log('\n=== Error Handling Example ===')
@@ -161,7 +241,7 @@ function errorHandlingExample() {
 }
 
 /**
- * Example 4: Custom decompression options
+ * Example 5: Custom decompression options
  */
 function customOptionsExample() {
   console.log('\n=== Custom Decompression Options Example ===')
@@ -205,13 +285,15 @@ function customOptionsExample() {
     // Compare with default parsing
     const replayDefault = parseReplay(uint8Array) // No options = use defaults
     console.log('✓ Default options also work fine for this replay')
+    replay.free()
+    replayDefault.free()
   } catch (error) {
     console.error('✗ Custom options test failed:', error)
   }
 }
 
 /**
- * Example 5: ShieldBattery data extraction
+ * Example 6: ShieldBattery data extraction
  */
 function shieldBatteryExample() {
   console.log('\n=== ShieldBattery Data Example ===')
@@ -299,6 +381,7 @@ function shieldBatteryExample() {
     } else {
       console.log(`  No ShieldBattery section found`)
     }
+    replay.free()
   } catch (error) {
     console.error('✗ ShieldBattery example failed:', error)
   }
@@ -309,6 +392,7 @@ console.log('============================')
 
 basicExample()
 detailedExample()
+commandAnalysisExample()
 errorHandlingExample()
 customOptionsExample()
 shieldBatteryExample()
