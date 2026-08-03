@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use std::fs::File;
+use std::{fs::File, ops::ControlFlow};
 
 #[derive(Parser)]
 #[command(name = "broodrep-cli")]
@@ -9,6 +9,10 @@ use std::fs::File;
 struct Args {
     /// Path to the StarCraft 1 replay file (.rep)
     replay_file: std::path::PathBuf,
+
+    /// Read commands and display a summary by command type
+    #[arg(long)]
+    commands: bool,
 }
 
 fn main() -> Result<()> {
@@ -18,12 +22,14 @@ fn main() -> Result<()> {
     let mut replay = broodrep::Replay::new(file)?;
 
     display_replay_info(&replay);
-    display_commands(&mut replay);
+    if args.commands {
+        display_commands(&mut replay);
+    }
 
     Ok(())
 }
 
-fn display_replay_info(replay: &broodrep::Replay<std::fs::File>) {
+fn display_replay_info(replay: &broodrep::Replay<File>) {
     println!("StarCraft 1 Replay Information");
     println!("=============================");
     println!();
@@ -56,10 +62,10 @@ fn display_replay_info(replay: &broodrep::Replay<std::fs::File>) {
     println!();
 
     // Players Section
-    let players: Vec<_> = replay.players().collect();
-    if !players.is_empty() {
+    let mut players = replay.players().enumerate().peekable();
+    if players.peek().is_some() {
         println!("Players:");
-        for (i, player) in players.iter().enumerate() {
+        for (i, player) in players {
             println!(
                 "  [{}] {} ({}, {}, Team {})",
                 i + 1,
@@ -73,8 +79,8 @@ fn display_replay_info(replay: &broodrep::Replay<std::fs::File>) {
     }
 
     // Observers Section
-    let observers: Vec<_> = replay.observers().collect();
-    if !observers.is_empty() {
+    let mut observers = replay.observers().peekable();
+    if observers.peek().is_some() {
         println!("Observers:");
         for observer in observers {
             println!("  [Obs] {}", observer.name);
@@ -83,39 +89,41 @@ fn display_replay_info(replay: &broodrep::Replay<std::fs::File>) {
     }
 }
 
-fn display_commands(replay: &mut broodrep::Replay<std::fs::File>) {
-    match replay.get_commands() {
-        Ok(Some(commands)) => {
-            println!("Commands:");
-            println!("  Total:         {}", commands.len());
+fn display_commands(replay: &mut broodrep::Replay<File>) {
+    let mut total = 0;
+    let mut type_counts = std::collections::HashMap::<&str, usize>::new();
 
-            // Count commands by type
-            let mut type_counts = std::collections::HashMap::<&str, usize>::new();
-            for cmd in &commands {
-                let name = match &cmd.command {
-                    broodrep::Command::Select { .. } | broodrep::Command::Select121 { .. } => {
-                        "Select"
-                    }
-                    broodrep::Command::SelectAdd { .. }
-                    | broodrep::Command::SelectAdd121 { .. } => "Select Add",
-                    broodrep::Command::SelectRemove { .. }
-                    | broodrep::Command::SelectRemove121 { .. } => "Select Remove",
-                    broodrep::Command::RightClick { .. }
-                    | broodrep::Command::RightClick121 { .. } => "Right Click",
-                    broodrep::Command::TargetedOrder { .. }
-                    | broodrep::Command::TargetedOrder121 { .. } => "Targeted Order",
-                    broodrep::Command::Build { .. } => "Build",
-                    broodrep::Command::Train { .. } => "Train",
-                    broodrep::Command::Hotkey { .. } => "Hotkey",
-                    broodrep::Command::Stop { .. } => "Stop",
-                    broodrep::Command::HoldPosition { .. } => "Hold Position",
-                    broodrep::Command::Chat { .. } => "Chat",
-                    broodrep::Command::KeepAlive => "Keep Alive",
-                    broodrep::Command::LeaveGame { .. } => "Leave Game",
-                    _ => "Other",
-                };
-                *type_counts.entry(name).or_default() += 1;
+    match replay.visit_commands(|cmd| {
+        total += 1;
+        let name = match &cmd.command {
+            broodrep::Command::Select { .. } | broodrep::Command::Select121 { .. } => "Select",
+            broodrep::Command::SelectAdd { .. } | broodrep::Command::SelectAdd121 { .. } => {
+                "Select Add"
             }
+            broodrep::Command::SelectRemove { .. } | broodrep::Command::SelectRemove121 { .. } => {
+                "Select Remove"
+            }
+            broodrep::Command::RightClick { .. } | broodrep::Command::RightClick121 { .. } => {
+                "Right Click"
+            }
+            broodrep::Command::TargetedOrder { .. }
+            | broodrep::Command::TargetedOrder121 { .. } => "Targeted Order",
+            broodrep::Command::Build { .. } => "Build",
+            broodrep::Command::Train { .. } => "Train",
+            broodrep::Command::Hotkey { .. } => "Hotkey",
+            broodrep::Command::Stop { .. } => "Stop",
+            broodrep::Command::HoldPosition { .. } => "Hold Position",
+            broodrep::Command::Chat { .. } => "Chat",
+            broodrep::Command::KeepAlive => "Keep Alive",
+            broodrep::Command::LeaveGame { .. } => "Leave Game",
+            _ => "Other",
+        };
+        *type_counts.entry(name).or_default() += 1;
+        ControlFlow::Continue(())
+    }) {
+        Ok(Some(ControlFlow::Continue(()))) => {
+            println!("Commands:");
+            println!("  Total:         {total}");
 
             let mut sorted: Vec<_> = type_counts.into_iter().collect();
             sorted.sort_by_key(|item| std::cmp::Reverse(item.1));
@@ -128,6 +136,7 @@ fn display_commands(replay: &mut broodrep::Replay<std::fs::File>) {
             println!("Commands:        (section not present)");
             println!();
         }
+        Ok(Some(ControlFlow::Break(()))) => unreachable!("visitor never breaks"),
         Err(e) => {
             println!("Commands:        (error: {e})");
             println!();

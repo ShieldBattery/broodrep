@@ -8,6 +8,10 @@ use thiserror::Error;
 
 use crate::Race;
 
+/// Number of bytes currently understood by [`parse_shieldbattery_section`]. Later section format
+/// versions may append fields; callers that only need the typed data can safely read this prefix.
+pub(crate) const PARSED_PREFIX_SIZE: usize = 0x58;
+
 #[derive(Error, Debug)]
 pub enum ShieldBatteryDataError {
     #[error(transparent)]
@@ -48,7 +52,7 @@ pub fn parse_shieldbattery_section(
     data.read_exact(&mut shieldbattery_version[..0x10])?;
     let shieldbattery_version = CStr::from_bytes_until_nul(&shieldbattery_version)?
         .to_string_lossy()
-        .to_string();
+        .into_owned();
     let mut team_game_main_players = [0u8; 4];
     data.read_exact(&mut team_game_main_players)?;
     let mut starting_races = [0u8; 12];

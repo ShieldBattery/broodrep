@@ -1,6 +1,6 @@
 use js_sys::Uint8Array;
 use serde::{Deserialize, Serialize};
-use std::io::Cursor;
+use std::{io::Cursor, ops::Range};
 use tsify::Tsify;
 use uuid::Uuid;
 use wasm_bindgen::prelude::*;
@@ -32,6 +32,38 @@ impl From<DecompressionConfig> for broodrep::DecompressionConfig {
             max_compression_ratio: options.max_compression_ratio.unwrap_or(500.0),
             // WASM doesn't have support for Instant::now() so we disable this timing check
             max_decompression_time: None,
+        }
+    }
+}
+
+/// Command parsing limits. Omitted fields use broodrep's safe defaults: one million commands and
+/// 16 MiB of dynamically owned command data.
+///
+/// Use these limits when loading commands or building a command summary from untrusted replay
+/// data. The limits apply to parsing in WASM before any command data is exposed to JavaScript.
+#[derive(Clone, Debug, Default, Tsify, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[tsify(from_wasm_abi)]
+pub struct CommandParseConfig {
+    /// Maximum commands to parse (default: 250,000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_commands: Option<u32>,
+
+    /// Maximum dynamically owned command-data bytes to retain (default: 16 MiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_owned_data_bytes: Option<u32>,
+}
+
+impl From<CommandParseConfig> for broodrep::CommandParseConfig {
+    fn from(options: CommandParseConfig) -> Self {
+        let defaults = broodrep::CommandParseConfig::default();
+        broodrep::CommandParseConfig {
+            max_commands: options
+                .max_commands
+                .map_or(defaults.max_commands, |value| value as usize),
+            max_owned_data_bytes: options
+                .max_owned_data_bytes
+                .map_or(defaults.max_owned_data_bytes, |value| value as usize),
         }
     }
 }
@@ -331,7 +363,7 @@ impl From<broodrep::ShieldBatteryData> for ShieldBatteryData {
     fn from(data: broodrep::ShieldBatteryData) -> Self {
         ShieldBatteryData {
             starcraft_exe_build: data.starcraft_exe_build,
-            shieldbattery_version: data.shieldbattery_version.to_string(),
+            shieldbattery_version: data.shieldbattery_version,
             team_game_main_players: data.team_game_main_players,
             starting_races: data.starting_races.map(Into::into),
             game_id: Uuid::from_u128(data.game_id),
@@ -690,6 +722,177 @@ impl From<broodrep::Command> for CommandData {
     }
 }
 
+/// A command list retained in WASM memory.
+///
+/// Obtain this with [`Replay::load_commands`]. It avoids immediately creating a JavaScript object
+/// for every command; [`ParsedCommands::get_range`] copies and serializes only the requested page.
+#[wasm_bindgen]
+pub struct ParsedCommands {
+    commands: Vec<broodrep::ReplayCommand>,
+}
+
+#[wasm_bindgen]
+impl ParsedCommands {
+    /// Number of commands retained by this owner.
+    #[wasm_bindgen(getter)]
+    pub fn length(&self) -> usize {
+        self.commands.len()
+    }
+
+    /// Whether this owner contains no commands.
+    #[wasm_bindgen(js_name = isEmpty)]
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty()
+    }
+
+    /// Returns one page of commands as JavaScript objects.
+    ///
+    /// `start` and `count` must describe a range entirely within this owner. The returned commands
+    /// are copied from WASM memory and converted to JavaScript; the other retained commands are not
+    /// converted or copied. An invalid range throws a `RangeError`.
+    #[wasm_bindgen(js_name = getRange)]
+    pub fn get_range(&self, start: f64, count: f64) -> Result<JsValue, JsValue> {
+        let range = checked_range(start, count, self.commands.len()).map_err(range_error)?;
+        commands_to_js(self.commands[range].iter().cloned())
+    }
+}
+
+/// Raw section bytes retained in WASM memory.
+///
+/// Obtain this with [`Replay::load_raw_section`] or [`Replay::load_raw_custom_section`]. Calling
+/// [`RawSection::copy_range`] creates a new JavaScript `Uint8Array` only for the requested range.
+#[wasm_bindgen]
+pub struct RawSection {
+    bytes: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl RawSection {
+    /// Number of bytes retained by this owner.
+    #[wasm_bindgen(getter)]
+    pub fn length(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Whether this owner contains no bytes.
+    #[wasm_bindgen(js_name = isEmpty)]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// Copies a byte range into a new JavaScript `Uint8Array`.
+    ///
+    /// `start` and `count` must describe a range entirely within this owner. An invalid range
+    /// throws a `RangeError`.
+    #[wasm_bindgen(js_name = copyRange)]
+    pub fn copy_range(&self, start: f64, count: f64) -> Result<Uint8Array, JsValue> {
+        let range = checked_range(start, count, self.bytes.len()).map_err(range_error)?;
+        Ok(Uint8Array::from(&self.bytes[range]))
+    }
+}
+
+/// The count for one raw command type ID.
+#[derive(Clone, Debug, Tsify, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct CommandTypeCount {
+    /// Raw command type ID from the replay stream.
+    pub type_id: u8,
+    /// Number of commands with this type ID.
+    pub count: u32,
+}
+
+/// A compact command-count summary.
+///
+/// `counts` is ordered by ascending numeric `typeId` and omits command types that do not occur.
+#[derive(Clone, Debug, Tsify, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct CommandSummary {
+    /// Total number of commands in the command section.
+    pub total: u32,
+    /// Per-type counts in ascending numeric type-ID order.
+    pub counts: Vec<CommandTypeCount>,
+}
+
+/// An eagerly copied replay snapshot that owns no replay bytes.
+///
+/// [`parse_replay_metadata`] returns this when an application only needs basic replay information
+/// and should release the original replay byte buffer immediately.
+#[derive(Clone, Debug, Tsify, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct ReplayMetadata {
+    pub format: ReplayFormat,
+    pub header: ReplayHeader,
+    pub slots: Vec<Player>,
+}
+
+fn checked_range(start: f64, count: f64, len: usize) -> Result<Range<usize>, &'static str> {
+    let start = js_index(start)?;
+    let count = js_index(count)?;
+    let end = start.checked_add(count).ok_or("range end overflows")?;
+
+    if start > len || end > len {
+        return Err("range is outside the retained data");
+    }
+
+    Ok(start..end)
+}
+
+fn js_index(value: f64) -> Result<usize, &'static str> {
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 {
+        return Err("range offsets and counts must be finite, non-negative integers");
+    }
+    if value > f64::from(u32::MAX) {
+        return Err("range offsets and counts must not exceed 4,294,967,295");
+    }
+
+    Ok(value as u32 as usize)
+}
+
+fn range_error(message: &'static str) -> JsValue {
+    js_sys::RangeError::new(message).into()
+}
+
+fn error(message: &'static str) -> JsValue {
+    JsValue::from_str(message)
+}
+
+fn commands_to_wasm(
+    commands: impl IntoIterator<Item = broodrep::ReplayCommand>,
+) -> Vec<ReplayCommand> {
+    commands.into_iter().map(Into::into).collect()
+}
+
+fn commands_to_js(
+    commands: impl IntoIterator<Item = broodrep::ReplayCommand>,
+) -> Result<JsValue, JsValue> {
+    serde_wasm_bindgen::to_value(&commands_to_wasm(commands))
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+fn command_summary_from_counts(
+    total: usize,
+    counts: [usize; 256],
+) -> Result<CommandSummary, &'static str> {
+    let total = u32::try_from(total).map_err(|_| "command total exceeds JavaScript range")?;
+    let counts = counts
+        .into_iter()
+        .enumerate()
+        .filter(|(_, count)| *count != 0)
+        .map(|(type_id, count)| {
+            Ok(CommandTypeCount {
+                type_id: type_id as u8,
+                count: u32::try_from(count)
+                    .map_err(|_| "command type count exceeds JavaScript range")?,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(CommandSummary { total, counts })
+}
+
 /// A parsed StarCraft replay. Only the header will be parsed eagerly, other sections may be
 /// processed on demand.
 ///
@@ -737,6 +940,79 @@ impl Replay {
             .collect()
     }
 
+    /// Loads and retains parsed commands in WASM memory, or returns `undefined` if the replay has
+    /// no commands section.
+    ///
+    /// This is an explicit caller-owned cache: the library does not retain the commands on
+    /// `Replay` itself. Use [`ParsedCommands::get_range`] to transfer only the pages needed by
+    /// JavaScript.
+    #[wasm_bindgen(js_name = loadCommands)]
+    pub fn load_commands(
+        &mut self,
+        options: Option<CommandParseConfig>,
+    ) -> Result<Option<ParsedCommands>, JsValue> {
+        let config = options.unwrap_or_default().into();
+        self.replay
+            .read_commands_with_config(config)
+            .map(|commands| commands.map(|commands| ParsedCommands { commands }))
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    /// Returns compact counts for command type IDs without retaining or serializing a complete
+    /// command list, or `undefined` if the replay has no commands section.
+    ///
+    /// The command section is still decompressed for this call. Use `loadCommands` when commands
+    /// themselves are needed more than once.
+    #[wasm_bindgen(js_name = getCommandSummary)]
+    pub fn get_command_summary(
+        &mut self,
+        options: Option<CommandParseConfig>,
+    ) -> Result<Option<CommandSummary>, JsValue> {
+        let mut total = 0usize;
+        let mut counts = [0usize; 256];
+        let config = options.unwrap_or_default().into();
+        let outcome = self
+            .replay
+            .visit_commands_with_config(config, |command| {
+                total += 1;
+                counts[usize::from(command.command.type_id())] += 1;
+                std::ops::ControlFlow::Continue(())
+            })
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+
+        outcome
+            .map(|_| command_summary_from_counts(total, counts).map_err(error))
+            .transpose()
+    }
+
+    /// Loads a decompressed replay section into a `RawSection` owner, or returns `undefined` if
+    /// it is not present. This keeps the full section in WASM memory without copying it into a
+    /// JavaScript `Uint8Array`; use [`RawSection::copy_range`] to copy only requested bytes.
+    #[wasm_bindgen(js_name = loadRawSection)]
+    pub fn load_raw_section(
+        &mut self,
+        section: ReplaySection,
+    ) -> Result<Option<RawSection>, JsValue> {
+        self.replay
+            .read_raw_section(section.into())
+            .map(|bytes| bytes.map(|bytes| RawSection { bytes }))
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    /// Loads a raw section identified by a little-endian 32-bit ID into a `RawSection` owner, or
+    /// returns `undefined` if it is not present. The bytes remain in WASM memory until the owner is
+    /// released.
+    #[wasm_bindgen(js_name = loadRawCustomSection)]
+    pub fn load_raw_custom_section(
+        &mut self,
+        section_id: u32,
+    ) -> Result<Option<RawSection>, JsValue> {
+        self.replay
+            .read_raw_section(section_id.to_le_bytes().into())
+            .map(|bytes| bytes.map(|bytes| RawSection { bytes }))
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
     /// Returns the raw bytes of a given replay section, or `undefined` if not present in the replay
     /// file. The bytes will be decompressed if it is a section with known compression.
     #[wasm_bindgen(js_name = getRawSection)]
@@ -772,14 +1048,10 @@ impl Replay {
     pub fn get_commands(&mut self) -> Result<JsValue, JsValue> {
         let commands = self
             .replay
-            .get_commands()
+            .read_commands()
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         match commands {
-            Some(cmds) => {
-                let wasm_cmds: Vec<ReplayCommand> = cmds.into_iter().map(Into::into).collect();
-                serde_wasm_bindgen::to_value(&wasm_cmds)
-                    .map_err(|e| JsValue::from_str(&e.to_string()))
-            }
+            Some(commands) => commands_to_js(commands),
             None => Ok(JsValue::UNDEFINED),
         }
     }
@@ -799,14 +1071,36 @@ pub fn parse_replay(
     data: Uint8Array,
     options: Option<DecompressionConfig>,
 ) -> Result<Replay, JsValue> {
+    parse_replay_from_data(data, options).map(Replay::new)
+}
+
+/// Parse only metadata from a StarCraft replay and release the replay bytes before returning.
+///
+/// Unlike [`parse_replay`], this does not return a lazy `Replay` owner. The returned snapshot owns
+/// its format, header, and slot data but does not retain the input `Uint8Array` in WASM memory.
+#[wasm_bindgen(js_name = parseReplayMetadata)]
+pub fn parse_replay_metadata(
+    data: Uint8Array,
+    options: Option<DecompressionConfig>,
+) -> Result<ReplayMetadata, JsValue> {
+    let replay = parse_replay_from_data(data, options)?;
+    Ok(ReplayMetadata {
+        format: replay.format.into(),
+        header: replay.header.clone().into(),
+        slots: replay.slots().iter().cloned().map(Into::into).collect(),
+    })
+}
+
+fn parse_replay_from_data(
+    data: Uint8Array,
+    options: Option<DecompressionConfig>,
+) -> Result<broodrep::Replay<Cursor<Vec<u8>>>, JsValue> {
     let bytes: Vec<u8> = data.to_vec();
     let cursor = Cursor::new(bytes);
 
     let config = options.unwrap_or_default().into();
-    let replay = broodrep::Replay::new_with_decompression_config(cursor, config)
-        .map_err(|e| JsValue::from_str(&format!("Failed to parse replay: {}", e)))?;
-
-    Ok(Replay::new(replay))
+    broodrep::Replay::new_with_decompression_config(cursor, config)
+        .map_err(|error| JsValue::from_str(&format!("Failed to parse replay: {error}")))
 }
 
 /// Get version information about the broodrep library.
@@ -928,5 +1222,127 @@ mod tests {
 
         assert_eq!(header.engine, Engine::BroodWar);
         assert_eq!(header.frames, 894);
+    }
+
+    #[wasm_bindgen_test]
+    fn test_retained_owner_ranges() {
+        let data = Uint8Array::from(LEGACY_REPLAY);
+        let mut replay = parse_replay(data, None).unwrap();
+
+        let commands = replay.load_commands(None).unwrap().unwrap();
+        let first_page = commands.get_range(0.0, 1.0).unwrap();
+        assert!(js_sys::Array::is_array(&first_page));
+        assert_eq!(js_sys::Array::from(&first_page).length(), 1);
+        assert!(commands.get_range(commands.length() as f64, 0.0).is_ok());
+        let range_error = commands
+            .get_range(commands.length() as f64, 1.0)
+            .unwrap_err();
+        assert!(range_error.is_instance_of::<js_sys::RangeError>());
+
+        let raw = replay
+            .load_raw_section(ReplaySection::Commands)
+            .unwrap()
+            .unwrap();
+        let full = replay
+            .get_raw_section(ReplaySection::Commands)
+            .unwrap()
+            .unwrap();
+        let copied = raw.copy_range(0.0, 4.0).unwrap();
+        assert_eq!(copied.to_vec(), full[..4]);
+        assert!(raw.copy_range(raw.length() as f64, 0.0).is_ok());
+        let range_error = raw.copy_range(raw.length() as f64, 1.0).unwrap_err();
+        assert!(range_error.is_instance_of::<js_sys::RangeError>());
+    }
+
+    #[test]
+    fn command_parse_options_use_core_defaults() {
+        let config: broodrep::CommandParseConfig = CommandParseConfig::default().into();
+        let defaults = broodrep::CommandParseConfig::default();
+        assert_eq!(config.max_commands, defaults.max_commands);
+        assert_eq!(config.max_owned_data_bytes, defaults.max_owned_data_bytes);
+
+        let custom: broodrep::CommandParseConfig = CommandParseConfig {
+            max_commands: Some(42),
+            max_owned_data_bytes: Some(512),
+        }
+        .into();
+        assert_eq!(custom.max_commands, 42);
+        assert_eq!(custom.max_owned_data_bytes, 512);
+    }
+
+    #[test]
+    fn ranges_must_be_in_bounds_without_overflow() {
+        assert_eq!(checked_range(2.0, 3.0, 8), Ok(2..5));
+        assert_eq!(checked_range(8.0, 0.0, 8), Ok(8..8));
+        assert!(checked_range(8.0, 1.0, 8).is_err());
+        assert!(checked_range(f64::from(u32::MAX), 1.0, 8).is_err());
+        assert!(checked_range(-1.0, 0.0, 8).is_err());
+        assert!(checked_range(1.5, 0.0, 8).is_err());
+        assert!(checked_range(f64::NAN, 0.0, 8).is_err());
+    }
+
+    #[test]
+    fn command_summary_is_sorted_by_numeric_type_id() {
+        let mut counts = [0usize; 256];
+        counts[0x05] = 2;
+        counts[0xfe] = 3;
+
+        let summary = command_summary_from_counts(5, counts).unwrap();
+        assert_eq!(summary.total, 5);
+        assert_eq!(summary.counts.len(), 2);
+        assert_eq!(summary.counts[0].type_id, 0x05);
+        assert_eq!(summary.counts[0].count, 2);
+        assert_eq!(summary.counts[1].type_id, 0xfe);
+        assert_eq!(summary.counts[1].count, 3);
+    }
+
+    #[test]
+    fn command_summary_streams_fixture_without_a_command_owner() {
+        let core_replay = broodrep::Replay::new(Cursor::new(LEGACY_REPLAY.to_vec())).unwrap();
+        let mut replay = Replay::new(core_replay);
+
+        let summary = replay.get_command_summary(None).unwrap().unwrap();
+        assert!(summary.total > 0);
+        assert_eq!(
+            summary.total,
+            summary.counts.iter().map(|count| count.count).sum()
+        );
+        assert!(
+            summary
+                .counts
+                .windows(2)
+                .all(|counts| counts[0].type_id < counts[1].type_id)
+        );
+    }
+
+    #[test]
+    fn loading_fixture_sections_creates_wasm_owners() {
+        let core_replay = broodrep::Replay::new(Cursor::new(LEGACY_REPLAY.to_vec())).unwrap();
+        let mut replay = Replay::new(core_replay);
+
+        let commands = replay.load_commands(None).unwrap().unwrap();
+        assert!(!commands.is_empty());
+        assert!(commands.length() > 0);
+
+        let section = replay
+            .load_raw_section(ReplaySection::Commands)
+            .unwrap()
+            .unwrap();
+        assert!(!section.is_empty());
+        assert!(section.length() > 0);
+    }
+
+    #[test]
+    fn command_conversion_retains_command_metadata() {
+        let converted = commands_to_wasm([broodrep::ReplayCommand {
+            frame: 123,
+            player_id: 4,
+            command: broodrep::Command::KeepAlive,
+        }]);
+
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].frame, 123);
+        assert_eq!(converted[0].player_id, 4);
+        assert!(matches!(converted[0].command, CommandData::KeepAlive));
     }
 }

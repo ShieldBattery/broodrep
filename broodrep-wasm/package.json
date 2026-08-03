@@ -26,9 +26,10 @@
   ],
   "scripts": {
     "build": "pnpm run build:node && pnpm run build:web ",
-    "build:node": "wasm-pack build --target nodejs --out-dir pkg-node && rm pkg-node/package.json",
-    "build:web": "wasm-pack build --target web && rm pkg/package.json",
-    "clean": "rm -rf pkg/ && rm -rf pkg-node/",
+    "build:node": "wasm-pack build --target nodejs --out-dir pkg-node && node -e \"require('node:fs').rmSync('pkg-node/package.json', { force: true })\"",
+    "build:web": "wasm-pack build --target web && node -e \"require('node:fs').rmSync('pkg/package.json', { force: true })\"",
+    "clean": "node -e \"require('node:fs').rmSync('pkg', { recursive: true, force: true }); require('node:fs').rmSync('pkg-node', { recursive: true, force: true })\"",
+    "bench": "pnpm run build:node && node --expose-gc benchmarks/node.mjs",
     "dev": "pnpm run build:web && vite",
     "prepublishOnly": "pnpm run clean && pnpm run build && pnpm run test",
     "test": "wasm-pack test --node"

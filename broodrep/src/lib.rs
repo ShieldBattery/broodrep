@@ -2,18 +2,19 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     io::{Cursor, Read, Seek, SeekFrom},
+    ops::ControlFlow,
 };
 
 use byteorder::{LittleEndian as LE, ReadBytesExt as _};
 use chrono::{DateTime, NaiveDateTime};
 use encoding_rs::{EUC_KR, WINDOWS_1252};
 use explode::ExplodeReader;
-use flate2::bufread::ZlibDecoder;
+use flate2::Decompress;
 use thiserror::Error;
 
-pub use crate::commands::{Command, CommandParseError, ReplayCommand};
-use crate::compression::SafeDecompressor;
+pub use crate::commands::{Command, CommandParseConfig, CommandParseError, ReplayCommand};
 pub use crate::compression::{DecompressionConfig, DecompressionError};
+use crate::compression::{SafeDecompressor, decompress_zlib_into};
 pub use crate::shieldbattery::{ShieldBatteryData, ShieldBatteryDataError};
 
 pub mod commands;
@@ -52,6 +53,10 @@ pub struct Replay<R: Read + Seek> {
     /// Uncompressed sizes for dynamically-sized sections, as declared by the size specifier
     /// section preceding them. Needed to tell raw chunks apart from compressed ones when reading.
     declared_sizes: HashMap<ReplaySection, u32>,
+    /// Deferred legacy-section walk when it is not needed to locate modern sections. Legacy
+    /// replays have no modern sections, while 1.21+ replays provide their offset directly, so
+    /// header-only users of either format do not need to scan every legacy chunk up front.
+    pending_legacy_walk: Option<(u64, u64)>,
     pub format: ReplayFormat,
     pub header: ReplayHeader,
 }
@@ -124,48 +129,38 @@ impl<R: Read + Seek> Replay<R> {
         let replay_header =
             Self::parse_replay_header(&replay_header, TextEncoding::for_format(format))?;
 
+        let legacy_start = reader.stream_position()?;
+        let defer_legacy_walk = match format {
+            ReplayFormat::Legacy => true,
+            ReplayFormat::Modern => false,
+            ReplayFormat::Modern121 => modern_start.is_some(),
+        };
+
         // Walk the legacy sections. These are non-essential, so if the walk fails at some point we
         // keep whatever sections were successfully located before the failure.
-        let legacy_end = || -> Result<u64, BroodrepError> {
-            // None of the legacy sections can extend past the start of the modern sections (or the
-            // end of the file, if there are none)
-            let limit = modern_start.unwrap_or(file_len);
-
-            // Dynamically sized legacy sections (commands, map data) have a section before them
-            // that specifies their total uncompressed size. If that size is 0, the section itself
-            // is omitted from the file entirely (not even its block header is written).
-            for section in [ReplaySection::Commands, ReplaySection::MapData] {
-                let size = Self::read_size_section(&mut reader)?;
-                if size > 0 {
-                    let pos = reader.stream_position()?;
-                    Self::skip_legacy_section(&mut reader, limit)?;
-                    section_offsets.insert(section, pos);
-                    declared_sizes.insert(section, size);
-                } else {
-                    empty_sections.insert(section);
-                }
-            }
-
-            // The player names section is only present if there is room for it before the modern
-            // sections/end of file (legacy replays don't contain it at all, and SC:R replays that
-            // are saved before any players have joined... exist, apparently)
-            let pos = reader.stream_position()?;
-            if pos < limit {
-                // TODO(tec27): Probably we should read this here and update the header player
-                // names as needed
-                Self::skip_legacy_section(&mut reader, limit)?;
-                section_offsets.insert(ReplaySection::PlayerNames, pos);
-            }
-
-            Ok(reader.stream_position()?)
-        }();
+        let legacy_limit = modern_start.unwrap_or(file_len);
+        let legacy_end = (!defer_legacy_walk).then(|| {
+            Self::walk_legacy_sections(
+                &mut reader,
+                legacy_limit,
+                &mut section_offsets,
+                &mut empty_sections,
+                &mut declared_sizes,
+            )
+        });
 
         // Walk the modern sections. 1.21+ replays tell us where these start directly; for older
         // modern replays they begin right after the legacy sections (if that walk succeeded).
         let modern_walk_start = match format {
             ReplayFormat::Legacy => None,
-            ReplayFormat::Modern => legacy_end.as_ref().ok().copied(),
-            ReplayFormat::Modern121 => modern_start.or(legacy_end.as_ref().ok().copied()),
+            ReplayFormat::Modern => legacy_end
+                .as_ref()
+                .and_then(|result| result.as_ref().ok().copied()),
+            ReplayFormat::Modern121 => modern_start.or_else(|| {
+                legacy_end
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok().copied())
+            }),
         };
         if let Some(start) = modern_walk_start {
             let _ = || -> Result<(), BroodrepError> {
@@ -197,6 +192,7 @@ impl<R: Read + Seek> Replay<R> {
             section_offsets,
             empty_sections,
             declared_sizes,
+            pending_legacy_walk: defer_legacy_walk.then_some((legacy_start, legacy_limit)),
             header: replay_header,
         })
     }
@@ -274,12 +270,19 @@ impl<R: Read + Seek> Replay<R> {
         &self.header.slots
     }
 
-    /// Returns the raw bytes of a given replay section, or [None] if not present in the replay
-    /// file. The bytes will be decompressed if it is a section with known compression.
-    pub fn get_raw_section(
+    /// Reads the raw bytes of a replay section, or [None] if it is not present. The bytes are
+    /// decompressed if the section uses known compression.
+    ///
+    /// This operation is intentionally uncached: every call seeks to the section and returns a new
+    /// allocation. Applications that need the same section repeatedly should retain the returned
+    /// bytes or build an application-specific processed replay type.
+    pub fn read_raw_section(
         &mut self,
         section: ReplaySection,
     ) -> Result<Option<Vec<u8>>, BroodrepError> {
+        if !section.is_modern() && section != ReplaySection::Header {
+            self.ensure_legacy_sections_indexed()?;
+        }
         if self.empty_sections.contains(&section) {
             return Ok(Some(Vec::new()));
         }
@@ -296,7 +299,7 @@ impl<R: Read + Seek> Replay<R> {
             // Blizzard sections, while keeping raw passthrough for custom sections (like Sbat).
             self.inner.seek(SeekFrom::Start(offset))?;
             let size = self.inner.read_u32::<LE>()?;
-            if u64::from(size) > self.file_len.saturating_sub(self.inner.stream_position()?) {
+            if u64::from(size) > self.file_len.saturating_sub(offset.saturating_add(4)) {
                 return Err(BroodrepError::MalformedHeader(
                     "section extends past end of file",
                 ));
@@ -322,10 +325,18 @@ impl<R: Read + Seek> Replay<R> {
         }
     }
 
+    /// Compatibility alias for [`Replay::read_raw_section`].
+    pub fn get_raw_section(
+        &mut self,
+        section: ReplaySection,
+    ) -> Result<Option<Vec<u8>>, BroodrepError> {
+        self.read_raw_section(section)
+    }
+
     /// Returns the game limits from the LMTS section. Returns default (classic BW 1.16) limits
     /// if the section is not present (pre-1.21 replays).
     pub fn get_limits(&mut self) -> Result<GameLimits, BroodrepError> {
-        let data = match self.get_raw_section(ReplaySection::Limits)? {
+        let data = match self.read_raw_section(ReplaySection::Limits)? {
             Some(d) => d,
             None => return Ok(GameLimits::default()),
         };
@@ -363,24 +374,153 @@ impl<R: Read + Seek> Replay<R> {
     pub fn get_shieldbattery_section(
         &mut self,
     ) -> Result<Option<ShieldBatteryData>, BroodrepError> {
-        let data = match self.get_raw_section(ReplaySection::ShieldBattery)? {
-            Some(d) => d,
+        let offset = match self.section_offsets.get(&ReplaySection::ShieldBattery) {
+            Some(&offset) => offset,
             None => return Ok(None),
         };
-        Ok(Some(shieldbattery::parse_shieldbattery_section(&data)?))
+
+        // Sbat is an extensible modern section, but the typed parser only needs the fixed prefix
+        // it currently understands. Avoid allocating and reading arbitrary trailing extension data.
+        self.inner.seek(SeekFrom::Start(offset))?;
+        let size = self.inner.read_u32::<LE>()?;
+        if u64::from(size) > self.file_len.saturating_sub(offset.saturating_add(4)) {
+            return Err(BroodrepError::MalformedHeader(
+                "section extends past end of file",
+            ));
+        }
+        let mut data = [0u8; shieldbattery::PARSED_PREFIX_SIZE];
+        let prefix_len = (size as usize).min(data.len());
+        self.inner.read_exact(&mut data[..prefix_len])?;
+
+        Ok(Some(shieldbattery::parse_shieldbattery_section(
+            &data[..prefix_len],
+        )?))
     }
 
-    /// Returns the parsed commands from the replay, or [None] if the commands section is not
-    /// present.
-    pub fn get_commands(&mut self) -> Result<Option<Vec<ReplayCommand>>, BroodrepError> {
-        let data = match self.get_raw_section(ReplaySection::Commands)? {
+    /// Reads and parses the commands from the replay using the default command limits, or returns
+    /// [None] if the commands section is not present.
+    ///
+    /// This operation is intentionally uncached and repeats section decompression and parsing on
+    /// every call. Retain the returned commands when they will be queried more than once.
+    pub fn read_commands(&mut self) -> Result<Option<Vec<ReplayCommand>>, BroodrepError> {
+        self.read_commands_with_config(CommandParseConfig::default())
+    }
+
+    /// Reads and parses the commands from the replay subject to `config`.
+    pub fn read_commands_with_config(
+        &mut self,
+        config: CommandParseConfig,
+    ) -> Result<Option<Vec<ReplayCommand>>, BroodrepError> {
+        let data = match self.read_raw_section(ReplaySection::Commands)? {
             Some(d) => d,
             None => return Ok(None),
         };
-        Ok(Some(commands::parse_commands(
+        Ok(Some(commands::parse_commands_with_config(
             &data,
             TextEncoding::for_format(self.format),
+            config,
         )?))
+    }
+
+    /// Reads the command section and invokes `visitor` once per parsed command without retaining a
+    /// complete command list. Return [`ControlFlow::Break`] to stop parsing deliberately.
+    ///
+    /// The decompressed command bytes are still held for the duration of this call, but individual
+    /// commands are dropped after the visitor returns unless the visitor retains them.
+    pub fn visit_commands<F>(
+        &mut self,
+        visitor: F,
+    ) -> Result<Option<ControlFlow<()>>, BroodrepError>
+    where
+        F: FnMut(ReplayCommand) -> ControlFlow<()>,
+    {
+        self.visit_commands_with_config(CommandParseConfig::default(), visitor)
+    }
+
+    /// Visits commands subject to `config` without collecting a complete command list.
+    pub fn visit_commands_with_config<F>(
+        &mut self,
+        config: CommandParseConfig,
+        visitor: F,
+    ) -> Result<Option<ControlFlow<()>>, BroodrepError>
+    where
+        F: FnMut(ReplayCommand) -> ControlFlow<()>,
+    {
+        let data = match self.read_raw_section(ReplaySection::Commands)? {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        Ok(Some(commands::visit_commands_with_config(
+            &data,
+            TextEncoding::for_format(self.format),
+            config,
+            visitor,
+        )?))
+    }
+
+    /// Compatibility alias for [`Replay::read_commands`].
+    pub fn get_commands(&mut self) -> Result<Option<Vec<ReplayCommand>>, BroodrepError> {
+        self.read_commands()
+    }
+
+    /// Compatibility alias for [`Replay::read_commands_with_config`].
+    pub fn get_commands_with_config(
+        &mut self,
+        config: CommandParseConfig,
+    ) -> Result<Option<Vec<ReplayCommand>>, BroodrepError> {
+        self.read_commands_with_config(config)
+    }
+
+    fn ensure_legacy_sections_indexed(&mut self) -> Result<(), BroodrepError> {
+        let Some((start, limit)) = self.pending_legacy_walk.take() else {
+            return Ok(());
+        };
+
+        self.inner.seek(SeekFrom::Start(start))?;
+        // Match eager initialization behavior: legacy auxiliary sections are non-essential, so a
+        // malformed walk keeps whatever offsets were discovered before the failure.
+        let _ = Self::walk_legacy_sections(
+            &mut self.inner,
+            limit,
+            &mut self.section_offsets,
+            &mut self.empty_sections,
+            &mut self.declared_sizes,
+        );
+        Ok(())
+    }
+
+    fn walk_legacy_sections(
+        reader: &mut R,
+        limit: u64,
+        section_offsets: &mut HashMap<ReplaySection, u64>,
+        empty_sections: &mut HashSet<ReplaySection>,
+        declared_sizes: &mut HashMap<ReplaySection, u32>,
+    ) -> Result<u64, BroodrepError> {
+        // Dynamically sized legacy sections (commands, map data) have a section before them that
+        // specifies their total uncompressed size. If that size is 0, the section itself is
+        // omitted from the file entirely (not even its block header is written).
+        for section in [ReplaySection::Commands, ReplaySection::MapData] {
+            let size = Self::read_size_section(reader)?;
+            if size > 0 {
+                let pos = reader.stream_position()?;
+                Self::skip_legacy_section(reader, limit)?;
+                section_offsets.insert(section, pos);
+                declared_sizes.insert(section, size);
+            } else {
+                empty_sections.insert(section);
+            }
+        }
+
+        // The player names section is only present if there is room before the modern sections/end
+        // of file. Legacy replays do not contain it at all.
+        let pos = reader.stream_position()?;
+        if pos < limit {
+            // TODO(tec27): Read this and update header player names as needed.
+            Self::skip_legacy_section(reader, limit)?;
+            section_offsets.insert(ReplaySection::PlayerNames, pos);
+        }
+
+        Ok(reader.stream_position()?)
     }
 
     fn detect_format(reader: &mut R) -> Result<ReplayFormat, BroodrepError> {
@@ -424,36 +564,55 @@ impl<R: Read + Seek> Replay<R> {
         file_len: u64,
     ) -> Result<Vec<u8>, BroodrepError> {
         let header = Self::read_section_header(reader)?;
+        let chunks_start = reader.stream_position()?;
         // Sanity check the chunk count before trusting it (each chunk needs at least a 4-byte
         // size), so that garbage data can't cause excessive looping
-        if u64::from(header.num_chunks) > file_len.saturating_sub(reader.stream_position()?) / 4 {
+        if u64::from(header.num_chunks) > file_len.saturating_sub(chunks_start) / 4 {
             return Err(BroodrepError::MalformedHeader(
                 "invalid section chunk count",
             ));
         }
         let mut data = Vec::with_capacity(expected_size.unwrap_or(0).min(MAX_SECTION_PREALLOC));
+        let mut compressed = Vec::new();
+        let mut zlib = None;
+        let mut decompression_scratch = [0u8; MAX_CHUNK_SIZE];
+        let mut remaining = file_len.saturating_sub(chunks_start);
         for _ in 0..header.num_chunks {
             let size = reader.read_u32::<LE>()?;
+            remaining = remaining.saturating_sub(4);
             // Bounds check against the file size so that garbage sizes can't cause huge
             // allocations (which panic/abort rather than erroring)
-            if u64::from(size) > file_len.saturating_sub(reader.stream_position()?) {
+            if u64::from(size) > remaining {
                 return Err(BroodrepError::MalformedHeader(
                     "section extends past end of file",
                 ));
             }
-            data.reserve(size as usize);
-            // TODO(tec27): Keep a working buffer around to avoid needing to reallocate buffers
-            // frequently? Peek the first byte and seek back to avoid needing this allocation at
-            // all?
-            let mut compressed = vec![0; size as usize];
-            reader.read_exact(&mut compressed)?;
+            remaining -= u64::from(size);
 
             // A chunk is stored raw (not compressed) exactly when its stored size matches its
             // expected uncompressed size
             let expected_chunk_size =
                 expected_size.map(|total| total.saturating_sub(data.len()).min(MAX_CHUNK_SIZE));
+            if expected_chunk_size == Some(size as usize) {
+                // Read known raw chunks straight into the output buffer. This avoids both a
+                // short-lived allocation and a second copy through the compressed scratch buffer.
+                let start = data.len();
+                let end =
+                    start
+                        .checked_add(size as usize)
+                        .ok_or(BroodrepError::MalformedHeader(
+                            "section size overflows address space",
+                        ))?;
+                data.resize(end, 0);
+                reader.read_exact(&mut data[start..end])?;
+                continue;
+            }
+
+            compressed.resize(size as usize, 0);
+            reader.read_exact(&mut compressed)?;
+
             let is_raw = match expected_chunk_size {
-                Some(expected) => size as usize == expected,
+                Some(_) => false,
                 // Without a known uncompressed size, fall back to heuristics: legacy compression
                 // (implode) has no reliable signature, but zlib streams start with 0x78
                 None => match format {
@@ -465,7 +624,7 @@ impl<R: Read + Seek> Replay<R> {
             };
 
             if is_raw {
-                data.extend(compressed);
+                data.extend_from_slice(&compressed);
             } else {
                 match format {
                     ReplayFormat::Legacy => {
@@ -477,12 +636,13 @@ impl<R: Read + Seek> Replay<R> {
                         decoder.read_to_end(&mut data)?;
                     }
                     ReplayFormat::Modern | ReplayFormat::Modern121 => {
-                        let mut decoder = SafeDecompressor::new(
-                            ZlibDecoder::new(&compressed[..]),
+                        decompress_zlib_into(
+                            zlib.get_or_insert_with(|| Decompress::new(true)),
+                            &compressed,
+                            &mut data,
+                            &mut decompression_scratch,
                             config,
-                            Some(size as u64),
-                        );
-                        decoder.read_to_end(&mut data)?;
+                        )?;
                     }
                 }
             }
@@ -512,22 +672,25 @@ impl<R: Read + Seek> Replay<R> {
     /// doesn't extend past `limit` (an absolute file offset).
     fn skip_legacy_section(reader: &mut R, limit: u64) -> Result<(), BroodrepError> {
         let header = Self::read_section_header(reader)?;
+        let mut pos = reader.stream_position()?;
         // Sanity check the chunk count before trusting it (each chunk needs at least a 4-byte
         // size), so that garbage data can't cause excessive looping
-        if u64::from(header.num_chunks) > limit.saturating_sub(reader.stream_position()?) / 4 {
+        if u64::from(header.num_chunks) > limit.saturating_sub(pos) / 4 {
             return Err(BroodrepError::MalformedHeader(
                 "invalid section chunk count",
             ));
         }
         for _ in 0..header.num_chunks {
             let size = reader.read_u32::<LE>()?;
-            let end = reader.stream_position()? + u64::from(size);
+            pos += 4;
+            let end = pos + u64::from(size);
             if end > limit {
                 return Err(BroodrepError::MalformedHeader(
                     "section extends past its bounds",
                 ));
             }
             reader.seek(SeekFrom::Start(end))?;
+            pos = end;
         }
         Ok(())
     }
@@ -1141,6 +1304,7 @@ mod tests {
     const SCR_EMPTY_COMMANDS: &[u8] = include_bytes!("../testdata/scr_empty_commands.rep");
     const LEGACY_UMS_INACTIVE: &[u8] = include_bytes!("../testdata/legacy_ums_inactive.rep");
     const LEGACY_RAW_COMMANDS: &[u8] = include_bytes!("../testdata/legacy_raw_commands.rep");
+    const LONG_HUNTERS: &[u8] = include_bytes!("../testdata/long_hunters.rep");
 
     #[test]
     fn test_replay_format_invalid() {
@@ -1254,7 +1418,12 @@ mod tests {
     #[test]
     fn replay_sections_legacy() {
         let mut cursor = Cursor::new(LEGACY);
-        let replay = Replay::new(&mut cursor).unwrap();
+        let mut replay = Replay::new(&mut cursor).unwrap();
+
+        assert!(replay.pending_legacy_walk.is_some());
+        assert_eq!(replay.section_offsets.get(&ReplaySection::Commands), None);
+        replay.ensure_legacy_sections_indexed().unwrap();
+        assert!(replay.pending_legacy_walk.is_none());
 
         assert_eq!(
             replay.section_offsets.get(&ReplaySection::Header),
@@ -1291,7 +1460,12 @@ mod tests {
     #[test]
     fn replay_sections_scr_121() {
         let mut cursor = Cursor::new(SCR_121);
-        let replay = Replay::new(&mut cursor).unwrap();
+        let mut replay = Replay::new(&mut cursor).unwrap();
+
+        assert!(replay.pending_legacy_walk.is_some());
+        assert_eq!(replay.section_offsets.get(&ReplaySection::Commands), None);
+        replay.ensure_legacy_sections_indexed().unwrap();
+        assert!(replay.pending_legacy_walk.is_none());
 
         assert_eq!(
             replay.section_offsets.get(&ReplaySection::Header),
@@ -1373,6 +1547,31 @@ mod tests {
         assert_eq!(data.game_id, 0x019878ca_6a88_7ebb_9b93_20d6e6bd892a);
         assert_eq!(data.user_ids, [101, 112, 1, 113, 0, 0, 0, 0]);
         assert_eq!(data.game_logic_version, Some(3));
+    }
+
+    #[test]
+    fn shieldbattery_typed_read_ignores_future_extension_bytes() {
+        const SBAT_SIZE_OFFSET: usize = 33281;
+        let mut bytes = SB_DATA.to_vec();
+        let extension_size = 1024 * 1024;
+        let original_size = u32::from_le_bytes(
+            bytes[SBAT_SIZE_OFFSET..SBAT_SIZE_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+        );
+        bytes[SBAT_SIZE_OFFSET..SBAT_SIZE_OFFSET + 4]
+            .copy_from_slice(&(original_size + extension_size).to_le_bytes());
+        bytes.resize(bytes.len() + extension_size as usize, 0xaa);
+
+        let mut replay = Replay::new(Cursor::new(bytes)).unwrap();
+        let data = replay.get_shieldbattery_section().unwrap().unwrap();
+        assert_eq!(data.shieldbattery_version, "10.1.0");
+
+        let cursor = replay.into_inner();
+        assert_eq!(
+            cursor.position(),
+            SBAT_SIZE_OFFSET as u64 + 4 + shieldbattery::PARSED_PREFIX_SIZE as u64
+        );
     }
 
     #[test]
@@ -1490,6 +1689,24 @@ mod tests {
     }
 
     #[test]
+    fn replay_command_visitor_matches_collected_commands() {
+        let mut collecting_replay = Replay::new(Cursor::new(LEGACY)).unwrap();
+        let expected = collecting_replay.read_commands().unwrap().unwrap();
+
+        let mut visiting_replay = Replay::new(Cursor::new(LEGACY)).unwrap();
+        let mut visited = Vec::new();
+        let outcome = visiting_replay
+            .visit_commands(|command| {
+                visited.push(command);
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+
+        assert_eq!(outcome, Some(ControlFlow::Continue(())));
+        assert_eq!(visited, expected);
+    }
+
+    #[test]
     fn commands_scr_121() {
         let cursor = Cursor::new(SCR_121);
         let mut replay = Replay::new(cursor).unwrap();
@@ -1524,6 +1741,14 @@ mod tests {
         assert_eq!(commands[2].command, Command::Cheat { flags: 0x00000001 });
 
         assert_eq!(commands.len(), 3);
+    }
+
+    #[test]
+    fn commands_long_multiplayer_fixture_fit_default_limits() {
+        let mut replay = Replay::new(Cursor::new(LONG_HUNTERS)).unwrap();
+
+        assert_eq!(replay.frames(), 56_209);
+        assert_eq!(replay.read_commands().unwrap().unwrap().len(), 36_167);
     }
 
     #[test]

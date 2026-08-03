@@ -1,8 +1,9 @@
 use std::{
-    io::{Read, Take},
+    io::{ErrorKind, Read, Take},
     time::{Duration, Instant},
 };
 
+use flate2::{Decompress, FlushDecompress, Status};
 use thiserror::Error;
 
 #[derive(Debug, Copy, Clone)]
@@ -113,6 +114,63 @@ impl<R: Read> Read for SafeDecompressor<R> {
     }
 }
 
+/// Decompresses one complete zlib stream into `output`, reusing `decompressor` and `scratch`
+/// across replay chunks. This avoids constructing a new zlib window allocation for every 8 KiB
+/// replay chunk while retaining the same per-chunk safety limits as [`SafeDecompressor`].
+pub(crate) fn decompress_zlib_into(
+    decompressor: &mut Decompress,
+    input: &[u8],
+    output: &mut Vec<u8>,
+    scratch: &mut [u8],
+    config: DecompressionConfig,
+) -> Result<(), DecompressionError> {
+    debug_assert!(!scratch.is_empty());
+    decompressor.reset(true);
+
+    let start = config.max_decompression_time.map(|_| Instant::now());
+    let mut input_offset = 0;
+    let mut bytes_written = 0_u64;
+
+    loop {
+        let input_before = decompressor.total_in();
+        let output_before = decompressor.total_out();
+        let status = decompressor
+            .decompress(&input[input_offset..], scratch, FlushDecompress::None)
+            .map_err(std::io::Error::from)?;
+        let consumed = (decompressor.total_in() - input_before) as usize;
+        let produced = (decompressor.total_out() - output_before) as usize;
+        input_offset += consumed;
+        bytes_written = bytes_written.saturating_add(produced as u64);
+
+        if bytes_written > config.max_decompressed_size {
+            return Err(DecompressionError::SizeLimitExceeded);
+        }
+        let ratio = bytes_written as f64 / input.len() as f64;
+        if ratio > config.max_compression_ratio {
+            return Err(DecompressionError::CompressionRatioExceeded);
+        }
+        if config
+            .max_decompression_time
+            .zip(start)
+            .is_some_and(|(max_time, start)| start.elapsed() > max_time)
+        {
+            return Err(DecompressionError::TimeoutExceeded);
+        }
+
+        output.extend_from_slice(&scratch[..produced]);
+
+        if status == Status::StreamEnd {
+            return Ok(());
+        }
+        if consumed == 0 && produced == 0 {
+            return Err(DecompressionError::Io(std::io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "zlib stream did not reach its end",
+            )));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
@@ -173,6 +231,17 @@ mod tests {
         encoder.finish().unwrap()
     }
 
+    fn decompress_zlib(
+        decompressor: &mut Decompress,
+        data: &[u8],
+        config: DecompressionConfig,
+    ) -> Result<Vec<u8>, DecompressionError> {
+        let mut output = Vec::new();
+        let mut scratch = [0u8; 8192];
+        decompress_zlib_into(decompressor, data, &mut output, &mut scratch, config)?;
+        Ok(output)
+    }
+
     #[test]
     fn zlib_bomb_size() {
         let config = DecompressionConfig {
@@ -208,5 +277,54 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         let err = err.downcast::<DecompressionError>().unwrap();
         assert!(matches!(err, DecompressionError::CompressionRatioExceeded));
+    }
+
+    #[test]
+    fn reusable_zlib_decompressor_enforces_limits() {
+        let data = create_zlib_bomb();
+        let mut decompressor = Decompress::new(true);
+
+        let size_error = decompress_zlib(
+            &mut decompressor,
+            &data,
+            DecompressionConfig {
+                max_decompressed_size: 1000 * 1024,
+                max_compression_ratio: f64::MAX,
+                max_decompression_time: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(size_error, DecompressionError::SizeLimitExceeded));
+
+        let ratio_error = decompress_zlib(
+            &mut decompressor,
+            &data,
+            DecompressionConfig {
+                max_decompressed_size: u64::MAX,
+                max_compression_ratio: 100.0,
+                max_decompression_time: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            ratio_error,
+            DecompressionError::CompressionRatioExceeded
+        ));
+    }
+
+    #[test]
+    fn reusable_zlib_decompressor_resets_between_streams() {
+        let data = create_zlib_bomb();
+        let config = DecompressionConfig {
+            max_decompressed_size: 2 * 1024 * 1024,
+            max_compression_ratio: 2000.0,
+            max_decompression_time: None,
+        };
+        let mut decompressor = Decompress::new(true);
+
+        let first = decompress_zlib(&mut decompressor, &data, config).unwrap();
+        let second = decompress_zlib(&mut decompressor, &data, config).unwrap();
+        assert_eq!(first.len(), 1024 * 1024);
+        assert_eq!(first, second);
     }
 }

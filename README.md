@@ -37,6 +37,14 @@ Test data is stored in Git LFS. If you haven't used Git LFS before, run:
 git lfs install
 ```
 
+Performance benchmarks cover header indexing from memory and files, section decompression, command
+collection/visitation, and dense command streams:
+
+```bash
+cargo bench -p broodrep --bench replay_parsing
+cd broodrep-wasm && pnpm bench
+```
+
 ## See also
 
 - [broodmap](https://github.com/ShieldBattery/broodmap) - a pure Rust implementation of StarCraft 1 map parsing
@@ -57,4 +65,3 @@ at your option.
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
 dual licensed as above, without any additional terms or conditions.
-

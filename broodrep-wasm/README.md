@@ -91,6 +91,13 @@ class Replay {
   // Methods for retrieving raw section data
   getRawSection(section: ReplaySection): Uint8Array | undefined
   getRawCustomSection(section_id: number): Uint8Array | undefined
+  loadRawSection(section: ReplaySection): RawSection | undefined
+  loadRawCustomSection(section_id: number): RawSection | undefined
+
+  // Command APIs
+  getCommands(): ReplayCommand[] | undefined
+  loadCommands(options?: CommandParseConfig): ParsedCommands | undefined
+  getCommandSummary(options?: CommandParseConfig): CommandSummary | undefined
 
   // Method for retrieving parsed ShieldBattery data
   getShieldBatterySection(): ShieldBatteryData | undefined
@@ -143,6 +150,37 @@ interface ShieldBatteryData {
   gameId: string // Game UUID on ShieldBattery
   userIds: [number, number, number, number, number, number, number, number] // ShieldBattery user IDs
   gameLogicVersion: number | undefined // Game logic version (if available)
+}
+```
+
+Section and command reads are uncached. Retain their result when it will be queried repeatedly.
+`loadCommands` and `loadRawSection` make that ownership explicit while keeping the retained data in
+WASM memory; their range methods copy only the requested page into JavaScript.
+
+For metadata-only use cases, `parseReplayMetadata(data, options?)` returns the format, header, and
+slots without retaining the complete replay byte buffer in WASM.
+
+```typescript
+interface CommandParseConfig {
+  maxCommands?: number // Default: 250,000
+  maxOwnedDataBytes?: number // Default: 16 MiB
+}
+
+class ParsedCommands {
+  readonly length: number
+  isEmpty(): boolean
+  getRange(start: number, count: number): ReplayCommand[]
+}
+
+class RawSection {
+  readonly length: number
+  isEmpty(): boolean
+  copyRange(start: number, count: number): Uint8Array
+}
+
+interface CommandSummary {
+  total: number
+  counts: Array<{ typeId: number; count: number }>
 }
 ```
 

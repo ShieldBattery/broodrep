@@ -1,4 +1,8 @@
-use std::io::{Cursor, Read as _};
+use std::{
+    io::{Cursor, Read as _},
+    mem::size_of,
+    ops::ControlFlow,
+};
 
 use byteorder::{LittleEndian as LE, ReadBytesExt as _};
 use thiserror::Error;
@@ -11,6 +15,46 @@ pub enum CommandParseError {
     Io(#[from] std::io::Error),
     #[error("command data truncated at frame {frame}, offset {offset}")]
     Truncated { frame: u32, offset: usize },
+    #[error("command count exceeds limit of {max_commands}")]
+    CommandCountLimitExceeded { max_commands: usize },
+    #[error("owned command data exceeds limit of {max_owned_data_bytes} bytes")]
+    OwnedDataLimitExceeded { max_owned_data_bytes: usize },
+}
+
+/// Limits applied while parsing replay commands.
+///
+/// The default limits are suitable for processing untrusted replays: at most 250,000
+/// commands and 16 MiB of cumulative dynamically owned command data. The owned-data budget
+/// covers selection unit tags, chat text, and the raw data retained by known and unknown
+/// commands; it does not include the [`ReplayCommand`] records themselves.
+#[derive(Debug, Copy, Clone)]
+pub struct CommandParseConfig {
+    /// Maximum number of commands to emit.
+    pub max_commands: usize,
+    /// Maximum cumulative bytes dynamically owned by emitted commands.
+    pub max_owned_data_bytes: usize,
+}
+
+impl CommandParseConfig {
+    /// Returns a configuration with no practical command-count or owned-data limits.
+    ///
+    /// Prefer an explicit finite configuration when processing untrusted replay data.
+    #[must_use]
+    pub const fn unlimited() -> Self {
+        Self {
+            max_commands: usize::MAX,
+            max_owned_data_bytes: usize::MAX,
+        }
+    }
+}
+
+impl Default for CommandParseConfig {
+    fn default() -> Self {
+        Self {
+            max_commands: 250_000,
+            max_owned_data_bytes: 16 * 1024 * 1024,
+        }
+    }
 }
 
 /// A single player command recorded at a specific game frame.
@@ -549,7 +593,68 @@ fn parse_command(type_id: u8, data: &[u8], encoding: TextEncoding) -> Command {
     }
 }
 
-/// Parse the raw command section bytes into a list of replay commands.
+/// Returns the number of bytes dynamically owned by a parsed command.
+fn command_owned_data_bytes(command: &Command) -> usize {
+    match command {
+        Command::Select { unit_tags }
+        | Command::SelectAdd { unit_tags }
+        | Command::SelectRemove { unit_tags }
+        | Command::Select121 { unit_tags }
+        | Command::SelectAdd121 { unit_tags }
+        | Command::SelectRemove121 { unit_tags } => {
+            unit_tags.len().saturating_mul(size_of::<u16>())
+        }
+        Command::Chat { message, .. } => message.len(),
+        Command::Known { data, .. } | Command::Unknown { data, .. } => data.len(),
+        _ => 0,
+    }
+}
+
+fn emit_command<F>(
+    command: ReplayCommand,
+    config: CommandParseConfig,
+    command_count: &mut usize,
+    owned_data_bytes: &mut usize,
+    visitor: &mut F,
+) -> Result<ControlFlow<()>, CommandParseError>
+where
+    F: FnMut(ReplayCommand) -> ControlFlow<()>,
+{
+    if *command_count >= config.max_commands {
+        return Err(CommandParseError::CommandCountLimitExceeded {
+            max_commands: config.max_commands,
+        });
+    }
+
+    let command_owned_data_bytes = command_owned_data_bytes(&command.command);
+    let new_owned_data_bytes = owned_data_bytes.saturating_add(command_owned_data_bytes);
+    if new_owned_data_bytes > config.max_owned_data_bytes {
+        return Err(CommandParseError::OwnedDataLimitExceeded {
+            max_owned_data_bytes: config.max_owned_data_bytes,
+        });
+    }
+
+    *command_count = command_count.saturating_add(1);
+    *owned_data_bytes = new_owned_data_bytes;
+    Ok(visitor(command))
+}
+
+/// Visits each command in the raw command section using [`CommandParseConfig::default`] limits.
+///
+/// Return [`ControlFlow::Break`] from `visitor` to stop parsing deliberately. The returned
+/// [`ControlFlow`] distinguishes that outcome from parsing the complete command section.
+pub fn visit_commands<F>(
+    data: &[u8],
+    encoding: TextEncoding,
+    visitor: F,
+) -> Result<ControlFlow<()>, CommandParseError>
+where
+    F: FnMut(ReplayCommand) -> ControlFlow<()>,
+{
+    visit_commands_with_config(data, encoding, CommandParseConfig::default(), visitor)
+}
+
+/// Visits each command in the raw command section subject to `config`.
 ///
 /// The command section format consists of frame blocks:
 /// - `i32 LE`: frame number
@@ -560,13 +665,33 @@ fn parse_command(type_id: u8, data: &[u8], encoding: TextEncoding) -> Command {
 /// - `u8`: player ID
 /// - `u8`: command type ID
 /// - type-specific data bytes
-pub fn parse_commands(
+pub fn visit_commands_with_config<F>(
     data: &[u8],
     encoding: TextEncoding,
-) -> Result<Vec<ReplayCommand>, CommandParseError> {
-    let mut commands = Vec::new();
+    config: CommandParseConfig,
+    mut visitor: F,
+) -> Result<ControlFlow<()>, CommandParseError>
+where
+    F: FnMut(ReplayCommand) -> ControlFlow<()>,
+{
+    let mut command_count = 0;
+    let mut owned_data_bytes = 0;
     let mut cursor = Cursor::new(data);
     let total_len = data.len() as u64;
+
+    macro_rules! emit {
+        ($command:expr) => {
+            if let ControlFlow::Break(()) = emit_command(
+                $command,
+                config,
+                &mut command_count,
+                &mut owned_data_bytes,
+                &mut visitor,
+            )? {
+                return Ok(ControlFlow::Break(()));
+            }
+        };
+    }
 
     while cursor.position() < total_len {
         // Need at least 5 bytes for a frame block header (4 frame + 1 size)
@@ -601,7 +726,7 @@ pub fn parse_commands(
                 if cmd_data_start + fixed_size > block_end {
                     // Not enough data — treat as unknown and consume rest of block
                     let remaining = &data[cmd_data_start..block_end];
-                    commands.push(ReplayCommand {
+                    emit!(ReplayCommand {
                         frame,
                         player_id,
                         command: Command::Unknown {
@@ -633,7 +758,7 @@ pub fn parse_commands(
                 // Unknown or variable-length command (SaveGame, LoadGame, etc.)
                 // Consume rest of block
                 let remaining = &data[cmd_data_start..block_end];
-                commands.push(ReplayCommand {
+                emit!(ReplayCommand {
                     frame,
                     player_id,
                     command: if is_known_command(type_id) {
@@ -656,7 +781,7 @@ pub fn parse_commands(
             if actual_end > block_end {
                 // Truncated variable-length command
                 let remaining = &data[cmd_data_start..block_end];
-                commands.push(ReplayCommand {
+                emit!(ReplayCommand {
                     frame,
                     player_id,
                     command: Command::Unknown {
@@ -669,7 +794,7 @@ pub fn parse_commands(
             }
 
             let cmd_data = &data[cmd_data_start..actual_end];
-            commands.push(ReplayCommand {
+            emit!(ReplayCommand {
                 frame,
                 player_id,
                 command: parse_command(type_id, cmd_data, encoding),
@@ -681,6 +806,32 @@ pub fn parse_commands(
         cursor.set_position(block_end as u64);
     }
 
+    Ok(ControlFlow::Continue(()))
+}
+
+/// Parses the raw command section bytes into a list of replay commands using the default limits.
+///
+/// Use [`parse_commands_with_config`] to set explicit limits, or
+/// [`CommandParseConfig::unlimited`] to opt out of them.
+pub fn parse_commands(
+    data: &[u8],
+    encoding: TextEncoding,
+) -> Result<Vec<ReplayCommand>, CommandParseError> {
+    parse_commands_with_config(data, encoding, CommandParseConfig::default())
+}
+
+/// Parses the raw command section bytes into a list of replay commands subject to `config`.
+pub fn parse_commands_with_config(
+    data: &[u8],
+    encoding: TextEncoding,
+    config: CommandParseConfig,
+) -> Result<Vec<ReplayCommand>, CommandParseError> {
+    let mut commands = Vec::new();
+    let outcome = visit_commands_with_config(data, encoding, config, |command| {
+        commands.push(command);
+        ControlFlow::Continue(())
+    })?;
+    debug_assert!(matches!(outcome, ControlFlow::Continue(())));
     Ok(commands)
 }
 
@@ -744,6 +895,122 @@ impl Command {
             Command::MinimapPing { .. } => 0x58,
             Command::Latency { .. } => 0x55,
             Command::Known { type_id, .. } | Command::Unknown { type_id, .. } => *type_id,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame_block(frame: u32, actions: &[u8]) -> Vec<u8> {
+        assert!(actions.len() <= u8::MAX as usize);
+        let mut data = frame.to_le_bytes().to_vec();
+        data.push(actions.len() as u8);
+        data.extend_from_slice(actions);
+        data
+    }
+
+    fn config_with_owned_data_limit(max_owned_data_bytes: usize) -> CommandParseConfig {
+        CommandParseConfig {
+            max_commands: usize::MAX,
+            max_owned_data_bytes,
+        }
+    }
+
+    #[test]
+    fn visitor_matches_collecting_parser() {
+        let data = frame_block(
+            42,
+            &[
+                1, 0x05, // KeepAlive
+                2, 0x09, 2, 0x34, 0x12, 0x78, 0x56, // Select
+                3, 0xff, 0xaa, // Unknown
+            ],
+        );
+
+        let parsed = parse_commands(&data, TextEncoding::Utf8).unwrap();
+        let mut visited = Vec::new();
+        let outcome = visit_commands(&data, TextEncoding::Utf8, |command| {
+            visited.push(command);
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+
+        assert_eq!(outcome, ControlFlow::Continue(()));
+        assert_eq!(visited, parsed);
+    }
+
+    #[test]
+    fn visitor_can_stop_early() {
+        let data = frame_block(42, &[1, 0x05, 2, 0x05]);
+        let mut visited = Vec::new();
+
+        let outcome = visit_commands(&data, TextEncoding::Utf8, |command| {
+            visited.push(command);
+            ControlFlow::Break(())
+        })
+        .unwrap();
+
+        assert_eq!(outcome, ControlFlow::Break(()));
+        assert_eq!(visited.len(), 1);
+        assert_eq!(visited[0].player_id, 1);
+    }
+
+    #[test]
+    fn command_count_limit_is_enforced_before_visiting_the_command() {
+        let mut actions = Vec::with_capacity(127 * 2);
+        for player_id in 0_u8..127 {
+            actions.extend([player_id, 0x05]);
+        }
+        let data = frame_block(42, &actions);
+        let mut visited = 0;
+
+        let error = visit_commands_with_config(
+            &data,
+            TextEncoding::Utf8,
+            CommandParseConfig {
+                max_commands: 64,
+                max_owned_data_bytes: usize::MAX,
+            },
+            |_| {
+                visited += 1;
+                ControlFlow::Continue(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            CommandParseError::CommandCountLimitExceeded { max_commands: 64 }
+        ));
+        assert_eq!(visited, 64);
+    }
+
+    #[test]
+    fn owned_data_limits_cover_dynamic_command_data() {
+        let select = frame_block(42, &[1, 0x09, 2, 0x34, 0x12, 0x78, 0x56]);
+        let known = frame_block(42, &[1, 0x06, 0xaa]);
+        let unknown = frame_block(42, &[1, 0xff, 0xaa]);
+        let mut chat_actions = vec![1, 0x5c, 3, b'h'];
+        chat_actions.extend_from_slice(&[0; 79]);
+        let chat = frame_block(42, &chat_actions);
+
+        for (data, limit) in [(&select, 3), (&known, 0), (&unknown, 0), (&chat, 0)] {
+            let error = visit_commands_with_config(
+                data,
+                TextEncoding::Utf8,
+                config_with_owned_data_limit(limit),
+                |_| ControlFlow::Continue(()),
+            )
+            .unwrap_err();
+
+            assert!(matches!(
+                error,
+                CommandParseError::OwnedDataLimitExceeded {
+                    max_owned_data_bytes
+                } if max_owned_data_bytes == limit
+            ));
         }
     }
 }
