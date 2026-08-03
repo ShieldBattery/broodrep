@@ -28,12 +28,14 @@
     "build": "pnpm run build:node && pnpm run build:web ",
     "build:node": "wasm-pack build --target nodejs --out-dir pkg-node && node -e \"require('node:fs').rmSync('pkg-node/package.json', { force: true })\"",
     "build:web": "wasm-pack build --target web && node -e \"require('node:fs').rmSync('pkg/package.json', { force: true })\"",
+    "check:versions": "node scripts/check-versions.mjs",
     "clean": "node -e \"require('node:fs').rmSync('pkg', { recursive: true, force: true }); require('node:fs').rmSync('pkg-node', { recursive: true, force: true })\"",
     "bench": "pnpm run build:node && node --expose-gc benchmarks/node.mjs",
     "dev": "pnpm run build:web && vite",
     "example": "pnpm run build:node && node examples/usage.mjs",
-    "prepublishOnly": "pnpm run clean && pnpm run build && pnpm run test",
-    "test": "wasm-pack test --node"
+    "prepublishOnly": "pnpm run check:versions && pnpm run clean && pnpm run build && pnpm run test:wasm",
+    "test": "pnpm run check:versions && pnpm run test:wasm",
+    "test:wasm": "wasm-pack test --node"
   },
   "repository": {
     "type": "git",
